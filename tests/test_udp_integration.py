@@ -9,7 +9,8 @@ from collections.abc import Callable, Iterator
 from concurrent.futures import Future, ThreadPoolExecutor
 from contextlib import contextmanager
 
-from netverify.udp import BUFFER_SIZE, check_udp_echo
+from netverify.results import FailureReason, Protocol, Target
+from netverify.udp import BUFFER_SIZE, check_udp_echo, verify_udp_echo
 
 LOOPBACK = "127.0.0.1"
 
@@ -97,3 +98,32 @@ def test_udp_echo_returns_false_when_real_server_does_not_reply():
 
     assert received == b"netverify-ping"
     assert result is False
+
+
+def test_verify_reports_success_from_real_server():
+    with udp_server(respond=lambda data: data) as ((host, port), server):
+        result = verify_udp_echo(host, port, timeout=CLIENT_TIMEOUT)
+        server.result(timeout=RESULT_TIMEOUT)
+
+    assert result.success is True
+    assert result.protocol is Protocol.UDP
+    assert result.target == Target(host, port)
+    assert result.duration_seconds >= 0
+
+
+def test_verify_reports_payload_mismatch_from_real_server():
+    with udp_server(respond=lambda data: b"unexpected-reply") as ((host, port), server):
+        result = verify_udp_echo(host, port, timeout=CLIENT_TIMEOUT)
+        server.result(timeout=RESULT_TIMEOUT)
+
+    assert result.reason is FailureReason.PAYLOAD_MISMATCH
+    assert "b'unexpected-reply'" in result.failure.message
+
+
+def test_verify_reports_timeout_when_real_server_does_not_reply():
+    with udp_server(respond=lambda data: None) as ((host, port), server):
+        result = verify_udp_echo(host, port, timeout=0.2)
+        server.result(timeout=RESULT_TIMEOUT)
+
+    assert result.reason is FailureReason.TIMEOUT
+    assert result.failure.exception_type == "TimeoutError"
