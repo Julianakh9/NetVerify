@@ -80,6 +80,35 @@ def tcp_listener(
             _stop(process)
 
 
+@contextmanager
+def tcp_server(
+    topology: VethTopology, endpoint: Endpoint, *, duration: float = 60.0
+) -> Iterator[int]:
+    """Run a TCP server on endpoint.address that accepts many connections.
+
+    Unlike tcp_listener(), the server keeps accepting connections, so it
+    suits checks that connect repeatedly, such as recovery polling. It is
+    stopped when the block ends by closing its standard input, which needs
+    no signal, even under sudo. It also stops by itself after duration
+    seconds, as a bound in case it is never told to stop.
+
+    Yields the port once the server is ready.
+
+    Raises:
+        ProbeError: The server did not report a port in time, or exited first.
+    """
+    args = [*PROBE, "tcp-serve", endpoint.address, "--duration", str(duration)]
+    process = topology.popen(endpoint, args, stdin=subprocess.PIPE)
+    try:
+        yield _wait_for_port(process, PROBE_OVERHEAD)
+    finally:
+        # communicate() closes stdin, which tells the server to stop.
+        try:
+            process.communicate(timeout=STOP_TIMEOUT)
+        except subprocess.TimeoutExpired:
+            _stop(process)
+
+
 def _stop(process: subprocess.Popen[str]) -> None:
     """Terminate the process and reap it, waiting a bounded time.
 

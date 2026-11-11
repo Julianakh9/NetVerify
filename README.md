@@ -26,6 +26,9 @@ NetVerify is a Python-based network verification and automated testing framework
   namespaces joined by a virtual Ethernet (veth) link, with TCP checks run
   from inside a namespace (Linux only; see
   [Linux Network Namespaces](#linux-network-namespaces)).
+- **Recovery monitoring:** poll a check until it succeeds or a deadline
+  passes, and record every attempt (see
+  [Recovery Monitoring](#recovery-monitoring)).
 - **Reversible fault injection:** take a topology's virtual link down for
   the duration of a `with` block, and restore it afterwards (Linux only; see
   [Reversible Fault Injection](#reversible-fault-injection)).
@@ -165,6 +168,73 @@ mismatch messages show up to 32 bytes of each payload, plus their lengths.
 4. The reply must come from the same IP address and port, and contain
    exactly the bytes that were sent.
 
+## Recovery Monitoring
+
+`netverify.recovery.wait_for_recovery()` runs a check repeatedly until it
+succeeds or a deadline passes. It works on any platform. The check is any
+callable that takes a timeout in seconds and returns a `VerificationResult`.
+
+```python
+from netverify.recovery import wait_for_recovery
+from netverify.tcp import verify_tcp_connection
+
+recovery = wait_for_recovery(
+    lambda timeout: verify_tcp_connection("127.0.0.1", 8080, timeout=timeout),
+    deadline=10.0,        # attempts may start within 10 s
+    interval=0.5,         # pause between attempts (must be > 0)
+    attempt_timeout=2.0,  # largest timeout given to one attempt
+)
+print(recovery.recovered, recovery.attempts, recovery.elapsed_seconds)
+```
+
+How polling works:
+
+1. The first attempt starts immediately.
+2. Each attempt gets `min(attempt_timeout, time remaining)` as its timeout.
+3. After a failed attempt, polling sleeps for `interval` and tries again,
+   but only if the next attempt would start before the deadline.
+4. Polling stops at the first success.
+
+`deadline`, `interval` and `attempt_timeout` must be positive finite
+numbers. Invalid values raise `ValueError` or `TypeError` before any
+attempt runs.
+
+**Failed results versus errors.** A failed `VerificationResult` means
+"not recovered yet", and polling continues. An exception raised by the check
+means the check itself could not run, for example a probe failure. It is
+never suppressed: polling stops, and the same exception propagates with a
+note listing the attempts made so far.
+
+`RecoveryResult` (immutable) describes the outcome:
+
+| Field or property | Meaning |
+|---|---|
+| `results` | Every attempt's `VerificationResult`, in order, including the final one |
+| `attempts` | Number of attempts that ran |
+| `last_result` | The final attempt's result |
+| `failure_reasons` | The reason of each failed attempt, in order |
+| `recovered` | A successful result was observed |
+| `recovered_within_deadline` | `recovered and elapsed_seconds <= deadline_seconds` |
+| `elapsed_seconds` | Measured time until polling returned (monotonic clock), never clipped |
+| `deadline_seconds`, `interval_seconds` | The settings used |
+
+`to_dict()` returns JSON-ready data, including `recovered_within_deadline`.
+
+### Deadline semantics
+
+- **The deadline governs when attempts start.** It cannot forcibly
+  interrupt a check that is already running. A synchronous check that
+  overruns its timeout, for example because of slow subprocess startup or
+  name resolution, can end after the deadline, unless the check bounds
+  those operations itself. In that case `recovered` can be `True` while
+  `recovered_within_deadline` is `False`.
+- **Times are observation times.** `elapsed_seconds` is when polling saw
+  the result, not the exact moment the network recovered.
+- **Polling can stop before the deadline,** when the next scheduled attempt
+  would start too late. `recovered=False` means no attempt that ran observed
+  success. It does not prove the network was unavailable for the whole
+  deadline.
+
 ## Linux Network Namespaces
 
 The `netverify.linux` package builds a small, disposable test network on
@@ -191,6 +261,16 @@ with VethTopology() as topology:          # creates, then always removes
 - the addresses `10.231.0.1/30` (left) and `10.231.0.2/30` (right) by
   default, configurable with `VethTopology(network=...)`;
 - the veth interfaces and loopback set up in both namespaces.
+
+Two helpers run a TCP server inside a namespace and yield its port:
+
+| Helper | Accepts | Stops |
+|---|---|---|
+| `tcp_listener(topology, endpoint, timeout=10.0)` | One connection | After that connection, or after `timeout` |
+| `tcp_server(topology, endpoint, duration=60.0)` | Any number of connections, so it suits recovery polling | When the `with` block ends, by closing the server's standard input; at the latest after `duration` |
+
+If `tcp_server` does not exit within 5 seconds of its input closing, it is
+sent SIGTERM. Anything still running is killed when the topology closes.
 
 ### Safety and privileges
 
@@ -290,6 +370,21 @@ accepts all three because the exact reason depends on Linux routing
 behaviour and has not been confirmed. The CI runs do not record which
 reason occurred.
 
+#### Recovery polling scenario
+
+The namespace test
+`test_recovery_after_restoring_the_link_is_observed_by_polling` does not
+assume recovery is instantaneous:
+
+1. One `tcp_server` in the right namespace serves every phase.
+2. A connection from the left namespace succeeds while healthy, and fails
+   with one of the accepted reasons above while the link is down.
+3. After the link is restored, `wait_for_recovery()` polls (20 s deadline,
+   0.2 s interval) until a connection succeeds.
+
+The test requires `recovered`, and bounds `elapsed_seconds` to allow one
+attempt's subprocess overhead past the deadline.
+
 ## Current Limitations
 
 - **IPv4 only.** UDP checks use `AF_INET`.
@@ -361,11 +456,12 @@ NETVERIFY_REQUIRE_NETNS=1 .venv/bin/python -m pytest -m netns   # fail instead o
 | `tests/test_udp_verify.py` | Unit (mocked) | Detailed UDP API, reply validation, duration and delegation |
 | `tests/test_tcp_integration.py` | Integration | Real TCP success and refused connections |
 | `tests/test_udp_integration.py` | Integration | Real UDP echo, payload mismatch and timeout |
+| `tests/test_recovery.py` | Unit (fake clock) and integration | Polling schedule, deadline semantics, attempt counting, invalid settings, exceptions; one real-socket recovery on `127.0.0.1` |
 | `tests/test_linux_topology.py` | Unit (fake runner) | Exact `ip` commands, cleanup after partial setup failures, cleanup retries |
 | `tests/test_linux_commands.py` | Integration | Running commands: errors, missing commands, timeouts, no shell |
-| `tests/test_linux_connectivity.py` | Integration | The in-namespace check and listener, run on `127.0.0.1` without namespaces |
+| `tests/test_linux_connectivity.py` | Integration | The in-namespace check, one-shot listener and multi-connection server, run on `127.0.0.1` without namespaces |
 | `tests/test_linux_faults.py` | Unit (fake runner) | `LinkDown` life cycle: restore after errors, injection and restore failures, verified restore, own interfaces only |
-| `tests/test_netns_integration.py` | Namespace (`netns`) | Real namespaces: configuration, connectivity, host isolation, cleanup, and the healthy → fault → recovery scenario |
+| `tests/test_netns_integration.py` | Namespace (`netns`) | Real namespaces: configuration, connectivity, host isolation, cleanup, the healthy → fault → recovery scenario, and recovery polling |
 
 - **Unit tests** mock the socket layer, the clock or the command runner
   where needed, so they use no network or DNS access and never assert real

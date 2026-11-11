@@ -14,7 +14,12 @@ import os
 import pytest
 
 from netverify.linux.commands import DEFAULT_TIMEOUT, CommandError, run_command
-from netverify.linux.connectivity import tcp_listener, verify_tcp_in_namespace
+from netverify.linux.connectivity import (
+    PROBE_OVERHEAD,
+    tcp_listener,
+    tcp_server,
+    verify_tcp_in_namespace,
+)
 from netverify.linux.faults import LinkDown, link_is_up
 from netverify.linux.topology import (
     TopologyCleanupError,
@@ -22,6 +27,7 @@ from netverify.linux.topology import (
     VethTopology,
     missing_prerequisites,
 )
+from netverify.recovery import wait_for_recovery
 from netverify.results import FailureReason, Target
 
 pytestmark = pytest.mark.netns
@@ -145,6 +151,35 @@ def test_connectivity_fails_while_link_is_down_and_returns_after_restore(topolog
     assert link_is_up(topology, topology.left) is True
     after = tcp_check(topology)
     assert after.success is True, after.failure
+
+
+def test_recovery_after_restoring_the_link_is_observed_by_polling(topology):
+    # One server for every phase: it accepts any number of connections, so
+    # failed attempts during recovery cannot use it up.
+    with tcp_server(topology, topology.right, duration=120.0) as port:
+        def check(timeout):
+            return verify_tcp_in_namespace(
+                topology, topology.left, topology.right.address, port, timeout=timeout
+            )
+
+        healthy = check(2.0)
+        assert healthy.success is True, healthy.failure
+
+        with LinkDown(topology, topology.left):
+            during = check(2.0)
+        assert during.success is False
+        assert during.reason in NO_PATH, during.failure
+
+        # The link is restored. Recovery is not assumed to be instantaneous:
+        # it is polled, with a bounded deadline.
+        recovery = wait_for_recovery(check, deadline=20.0, interval=0.2, attempt_timeout=2.0)
+
+    assert recovery.recovered is True, recovery.to_dict()
+    assert recovery.attempts >= 1
+    assert 0.0 <= recovery.elapsed_seconds
+    # Each attempt is bounded by the probe's own timeouts; allow for one
+    # attempt's subprocess overhead past the deadline (see netverify.recovery).
+    assert recovery.elapsed_seconds < 20.0 + 2.0 + PROBE_OVERHEAD
 
 
 def test_close_removes_namespaces(netns_prerequisites):

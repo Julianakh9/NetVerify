@@ -316,6 +316,20 @@ def test_run_passes_command_and_timeout_to_runner():
     assert runner.timeouts[-1] == 5.0
 
 
+def test_popen_runs_in_the_namespace_and_passes_stdin_through():
+    topology = make_topology(FakeRunner())
+    topology.setup()
+
+    with patch("netverify.linux.topology.subprocess.Popen") as popen:
+        topology.popen(topology.left, ["true"], stdin=subprocess.PIPE)
+        topology.popen(topology.left, ["true"])
+
+    with_pipe, default = popen.call_args_list
+    assert with_pipe.args[0] == topology.exec_command(topology.left, ["true"])
+    assert with_pipe.kwargs["stdin"] is subprocess.PIPE
+    assert default.kwargs["stdin"] is None  # Inherited, as before.
+
+
 def test_commands_require_an_active_topology():
     topology = make_topology(FakeRunner())
 

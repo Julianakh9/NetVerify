@@ -20,6 +20,7 @@ from netverify.linux.connectivity import (
     PROBE,
     ProbeError,
     tcp_listener,
+    tcp_server,
     verify_tcp_in_namespace,
 )
 from netverify.linux.probe import main as probe_main
@@ -140,6 +141,82 @@ def test_listener_that_never_reports_a_port_is_stopped(monkeypatch):
             pass
 
     assert topology.processes[0].returncode is not None
+
+
+class ServerTopology(RecordingTopology):
+    """Like RecordingTopology, but passes stdin through, as tcp_server needs."""
+
+    def popen(self, endpoint, args, *, stdin=None):
+        process = subprocess.Popen(self.command or args, stdin=stdin,
+                                   stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        self.processes.append(process)
+        return process
+
+
+def test_server_accepts_repeated_connections():
+    topology = ServerTopology()
+
+    with tcp_server(topology, LOCAL, duration=30.0) as port:
+        results = [verify_tcp_in_namespace(topology, LOCAL, "127.0.0.1", port, timeout=2.0)
+                   for _ in range(3)]
+
+    assert [result.success for result in results] == [True, True, True]
+
+
+def test_server_stops_promptly_when_the_block_ends():
+    topology = ServerTopology()
+    start = time.monotonic()
+
+    with tcp_server(topology, LOCAL, duration=30.0):
+        pass
+
+    # Stopped by closing stdin, not by waiting for its 30 second duration.
+    assert time.monotonic() - start < 10.0
+    assert topology.processes[0].returncode == 0
+
+
+def test_server_stops_promptly_when_the_block_raises():
+    topology = ServerTopology()
+    start = time.monotonic()
+
+    with pytest.raises(ValueError):
+        with tcp_server(topology, LOCAL, duration=30.0):
+            raise ValueError("check failed")
+
+    assert time.monotonic() - start < 10.0
+    assert topology.processes[0].returncode == 0
+
+
+def test_server_that_ignores_stdin_is_terminated(monkeypatch):
+    monkeypatch.setattr(connectivity, "STOP_TIMEOUT", 0.5)
+    # Prints a port, then never reads stdin and never exits by itself.
+    script = "import time; print('{\"port\": 1}', flush=True); time.sleep(60)"
+    topology = ServerTopology([sys.executable, "-c", script])
+
+    with tcp_server(topology, LOCAL, duration=30.0):
+        pass
+
+    assert topology.processes[0].returncode is not None
+
+
+def test_server_that_exits_early_is_a_probe_error():
+    script = "import sys; sys.stderr.write('cannot bind'); sys.exit(2)"
+    topology = ServerTopology([sys.executable, "-c", script])
+
+    with pytest.raises(ProbeError, match="cannot bind"):
+        with tcp_server(topology, LOCAL):
+            pass
+
+
+def test_server_exits_by_itself_after_its_duration():
+    completed = subprocess.run(
+        [*PROBE, "tcp-serve", "127.0.0.1", "--duration", "0.3"],
+        stdin=subprocess.PIPE,  # Kept open: only the duration can stop it.
+        stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, timeout=30,
+    )
+
+    assert completed.returncode == 0
+    assert "port" in json.loads(completed.stdout)
 
 
 def test_probe_cli_prints_one_json_result(capsys):

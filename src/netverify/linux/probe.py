@@ -13,13 +13,21 @@ Usage:
         Listens on an OS-assigned port, prints {"port": N}, accepts one
         connection, then exits 0. Exits 1 if nothing connects in time.
 
+    python -m netverify.linux.probe tcp-serve HOST [--duration SECONDS]
+        Listens on an OS-assigned port, prints {"port": N}, and accepts and
+        closes any number of connections. Exits 0 when its standard input
+        is closed, or after duration seconds, whichever comes first.
+
 Nothing here is Linux-specific, so it can also be tested without namespaces.
 """
 
 import argparse
 import json
+import os
+import selectors
 import socket
 import sys
+import time
 from collections.abc import Sequence
 
 from netverify.tcp import verify_tcp_connection
@@ -41,11 +49,17 @@ def main(argv: Sequence[str] | None = None) -> int:
     listen.add_argument("host")
     listen.add_argument("--timeout", type=float, default=10.0)
 
+    serve = commands.add_parser("tcp-serve", help="accept TCP connections until stopped")
+    serve.add_argument("host")
+    serve.add_argument("--duration", type=float, default=60.0)
+
     args = parser.parse_args(argv)
     if args.command == "tcp-connect":
         result = verify_tcp_connection(args.host, args.port, timeout=args.timeout)
         print(json.dumps(result.to_dict()), flush=True)
         return 0
+    if args.command == "tcp-serve":
+        return _serve(args.host, args.duration)
     return _listen_once(args.host, args.timeout)
 
 
@@ -64,6 +78,36 @@ def _listen_once(host: str, timeout: float) -> int:
             return 1
         with connection:
             pass
+    return 0
+
+
+def _serve(host: str, duration: float) -> int:
+    """Accept and close connections until stdin closes or duration passes.
+
+    Closing stdin is how the parent stops the server. It needs no signal,
+    so it works the same way when the server runs under sudo.
+    """
+    deadline = time.monotonic() + duration
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as listener, \
+         selectors.DefaultSelector() as selector:
+        listener.bind((host, 0))
+        listener.listen(16)
+        listener.setblocking(False)
+        print(json.dumps({"port": listener.getsockname()[1]}), flush=True)
+
+        selector.register(listener, selectors.EVENT_READ, "connection")
+        selector.register(sys.stdin.fileno(), selectors.EVENT_READ, "stdin")
+        while (remaining := deadline - time.monotonic()) > 0:
+            for key, _ in selector.select(remaining):
+                if key.data == "stdin":
+                    if not os.read(key.fd, 4096):
+                        return 0  # End of input: the parent asked us to stop.
+                    continue
+                try:
+                    connection, _ = listener.accept()
+                except BlockingIOError:
+                    continue  # The client gave up before we accepted.
+                connection.close()
     return 0
 
 

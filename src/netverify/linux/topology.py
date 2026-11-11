@@ -235,14 +235,18 @@ class VethTopology:
         """
         return self._run(self.exec_command(endpoint, args), timeout=timeout)
 
-    def popen(self, endpoint: Endpoint, args: Sequence[str]) -> subprocess.Popen[str]:
+    def popen(
+        self, endpoint: Endpoint, args: Sequence[str], *, stdin: int | None = None
+    ) -> subprocess.Popen[str]:
         """Start a command inside endpoint's namespace without waiting for it.
 
-        stdout and stderr are pipes in text mode. Processes still running in
-        the namespace are stopped by close().
+        stdout and stderr are pipes in text mode. stdin is passed to Popen
+        (for example subprocess.PIPE); by default it is inherited. Processes
+        still running in the namespace are stopped by close().
         """
         return subprocess.Popen(
             self.exec_command(endpoint, args),
+            stdin=stdin,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             text=True,

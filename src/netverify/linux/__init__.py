@@ -6,7 +6,12 @@ when a topology is set up or used.
 """
 
 from netverify.linux.commands import CommandError, run_command
-from netverify.linux.connectivity import ProbeError, tcp_listener, verify_tcp_in_namespace
+from netverify.linux.connectivity import (
+    ProbeError,
+    tcp_listener,
+    tcp_server,
+    verify_tcp_in_namespace,
+)
 from netverify.linux.faults import (
     FaultError,
     FaultInjectionError,
@@ -39,5 +44,6 @@ __all__ = [
     "missing_prerequisites",
     "run_command",
     "tcp_listener",
+    "tcp_server",
     "verify_tcp_in_namespace",
 ]
