@@ -118,3 +118,38 @@ def test_failed_result_to_dict_is_json_serializable():
         "error_code": 61,
         "exception_type": "ConnectionRefusedError",
     }
+
+
+@pytest.mark.parametrize("failure", [None, REFUSED], ids=["success", "failure"])
+def test_from_dict_round_trips_through_json(failure):
+    result = VerificationResult(Protocol.TCP, TARGET, 0.25, failure=failure)
+
+    rebuilt = VerificationResult.from_dict(json.loads(json.dumps(result.to_dict())))
+
+    assert rebuilt == result
+
+
+def test_from_dict_rejects_contradictory_success_flag():
+    data = VerificationResult(Protocol.TCP, TARGET, 0.25, failure=REFUSED).to_dict()
+    data["success"] = True
+
+    with pytest.raises(ValueError, match="contradicts"):
+        VerificationResult.from_dict(data)
+
+
+@pytest.mark.parametrize(
+    ("change", "error"),
+    [
+        (lambda d: d.update(protocol="icmp"), ValueError),
+        (lambda d: d["failure"].update(reason="exploded"), ValueError),
+        (lambda d: d.update(duration_seconds=-1), ValueError),
+        (lambda d: d.pop("target"), KeyError),
+    ],
+    ids=["unknown-protocol", "unknown-reason", "negative-duration", "missing-target"],
+)
+def test_from_dict_rejects_invalid_data(change, error):
+    data = VerificationResult(Protocol.TCP, TARGET, 0.25, failure=REFUSED).to_dict()
+    change(data)
+
+    with pytest.raises(error):
+        VerificationResult.from_dict(data)

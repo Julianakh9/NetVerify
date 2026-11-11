@@ -5,6 +5,7 @@ errors are classified; see netverify.diagnostics for that.
 """
 
 import math
+from collections.abc import Mapping
 from dataclasses import dataclass
 from enum import StrEnum
 from typing import Any
@@ -124,3 +125,32 @@ class VerificationResult:
             "duration_seconds": self.duration_seconds,
             "failure": failure,
         }
+
+    @classmethod
+    def from_dict(cls, data: Mapping[str, Any]) -> "VerificationResult":
+        """Rebuild a result from the output of to_dict().
+
+        Raises:
+            KeyError: A required field is missing.
+            ValueError: A value is invalid, or "success" contradicts "failure".
+            TypeError: A field has the wrong type.
+        """
+        failure = None
+        failure_data = data["failure"]
+        if failure_data is not None:
+            failure = Failure(
+                reason=FailureReason(failure_data["reason"]),
+                message=failure_data["message"],
+                error_code=failure_data.get("error_code"),
+                exception_type=failure_data.get("exception_type"),
+            )
+        target = data["target"]
+        result = cls(
+            protocol=Protocol(data["protocol"]),
+            target=Target(target["host"], target["port"]),
+            duration_seconds=data["duration_seconds"],
+            failure=failure,
+        )
+        if "success" in data and data["success"] is not result.success:
+            raise ValueError("'success' contradicts 'failure'")
+        return result

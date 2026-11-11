@@ -16,3 +16,7 @@ where = ["src"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+addopts = "--strict-markers"
+markers = [
+    "netns: needs Linux network namespaces (root or passwordless sudo); skipped elsewhere unless NETVERIFY_REQUIRE_NETNS=1",
+]
