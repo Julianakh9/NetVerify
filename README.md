@@ -616,6 +616,10 @@ It uses Python 3.11, the oldest supported version.
   four jobs. The namespace job ran the recovery polling test, and its
   leftover-namespace check passed
   ([run 43080592924](https://github.com/Julianakh9/NetVerify/actions/runs/43080592924)).
+- The first run with the command-line interface, on commit `cad920c`,
+  passed all four jobs. The CLI tests, including the installed `netverify`
+  script, ran in all three Python jobs
+  ([run 43082568045](https://github.com/Julianakh9/NetVerify/actions/runs/43082568045)).
 
 Each job's log records the exact Python version used (in the "Set up
 Python" step) and the installed package versions (in the "Show installed
@@ -630,5 +634,5 @@ packages" step).
 
 ## Current Status
 
-**In Progress — recovery monitoring (Milestone 5C) verified on Linux in CI;
-command-line interface (Milestone 6) in development**
+**In Progress — command-line interface (Milestone 6) verified in CI;
+final quality review next**
