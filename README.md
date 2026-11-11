@@ -26,6 +26,9 @@ NetVerify is a Python-based network verification and automated testing framework
   namespaces joined by a virtual Ethernet (veth) link, with TCP checks run
   from inside a namespace (Linux only; see
   [Linux Network Namespaces](#linux-network-namespaces)).
+- **Reversible fault injection:** take a topology's virtual link down for
+  the duration of a `with` block, and restore it afterwards (Linux only; see
+  [Reversible Fault Injection](#reversible-fault-injection)).
 
 ### Planned
 
@@ -219,6 +222,74 @@ Linux with `ip` (iproute2) and either root or passwordless `sudo`, plus
 `setpriv` (util-linux) when not running as root.
 `netverify.linux.missing_prerequisites()` lists what is missing.
 
+### Reversible Fault Injection
+
+`LinkDown` brings one of a topology's veth interfaces administratively down
+for the duration of a `with` block, then restores it:
+
+```python
+from netverify.linux import LinkDown, VethTopology, link_is_up
+
+with VethTopology() as topology:
+    with LinkDown(topology, topology.left):
+        ...                                    # the left link is down here
+    assert link_is_up(topology, topology.left)  # restored afterwards
+```
+
+How it works:
+
+1. **Before anything changes,** an endpoint from another topology, or a
+   topology that is not active, is rejected with `ValueError` or
+   `RuntimeError`.
+2. **On entry,** the interface's original state is read as the calling user
+   (`ip -o link show` inside the namespace, with no privileges), then the
+   interface is set down.
+3. **On exit,** an interface that was up before is set up again, and its
+   state is read back to confirm the restore. An interface that was already
+   down is left down. Exit runs even if the block raises.
+
+Safety:
+
+- **Only the topology's own interfaces.** Faults go through
+  `VethTopology.set_link_state()`. It takes the interface name from the
+  topology's own endpoint, and refuses endpoints from other topologies. The
+  host's interfaces, routes and firewall are never touched.
+- **One privileged command.** Only `ip -n <namespace> link set dev <veth>
+  up|down` runs with `sudo -n`.
+- **Restored, or deleted with the topology.** If restoring fails, the
+  topology's `close()` still deletes the namespace, and the interface with
+  it.
+
+Fault errors share no base class with topology or probe errors:
+
+| Outcome | Meaning |
+|---|---|
+| `FaultInjectionError` | The fault could not be applied: the link state could not be read, or the link could not be set down. A restore is attempted before it is raised, in case the command took effect. |
+| `FaultRestoreError` | The link could not be set up again, or is still down afterwards. If the `with` block raised, its exception is kept and this is attached to it as a note. |
+| `VerificationResult` with a `failure` | A check ran while the fault was active and failed: the expected outcome, not an error. |
+
+Both errors subclass `FaultError`.
+
+#### Healthy → fault → recovery scenario
+
+The namespace integration test
+`test_connectivity_fails_while_link_is_down_and_returns_after_restore`
+checks the whole cycle, connecting from the left namespace to a listener in
+the right namespace:
+
+| Phase | Expected |
+|---|---|
+| Healthy | The TCP connection succeeds. |
+| Fault (left link down) | The link reads as down. A listener is running, so a failure cannot be a missing service. The TCP connection fails. The host's interfaces and routes are unchanged. |
+| Recovery | The link reads as up, and the TCP connection succeeds again on the first attempt, with no retry. |
+
+**Accepted failure classifications during the fault:** `NETWORK_UNREACHABLE`,
+`HOST_UNREACHABLE` or `TIMEOUT`, all of which mean the packets had no
+working path. Success and `CONNECTION_REFUSED` fail the test. The test
+accepts all three because the exact reason depends on Linux routing
+behaviour and has not been confirmed. The CI runs do not record which
+reason occurred.
+
 ## Current Limitations
 
 - **IPv4 only.** UDP checks use `AF_INET`.
@@ -293,7 +364,8 @@ NETVERIFY_REQUIRE_NETNS=1 .venv/bin/python -m pytest -m netns   # fail instead o
 | `tests/test_linux_topology.py` | Unit (fake runner) | Exact `ip` commands, cleanup after partial setup failures, cleanup retries |
 | `tests/test_linux_commands.py` | Integration | Running commands: errors, missing commands, timeouts, no shell |
 | `tests/test_linux_connectivity.py` | Integration | The in-namespace check and listener, run on `127.0.0.1` without namespaces |
-| `tests/test_netns_integration.py` | Namespace (`netns`) | Real namespaces: configuration, connectivity, host isolation, cleanup |
+| `tests/test_linux_faults.py` | Unit (fake runner) | `LinkDown` life cycle: restore after errors, injection and restore failures, verified restore, own interfaces only |
+| `tests/test_netns_integration.py` | Namespace (`netns`) | Real namespaces: configuration, connectivity, host isolation, cleanup, and the healthy → fault → recovery scenario |
 
 - **Unit tests** mock the socket layer, the clock or the command runner
   where needed, so they use no network or DNS access and never assert real
@@ -336,6 +408,10 @@ It uses Python 3.11, the oldest supported version.
 - The first run with namespace tests, on commit `40eaba4`, passed all four
   jobs, including the namespace job's leftover-namespace check
   ([run 43059673280](https://github.com/Julianakh9/NetVerify/actions/runs/43059673280)).
+- The first run with fault injection, on commit `bedd784`, passed all four
+  jobs. The namespace job ran the healthy → fault → recovery test, and its
+  leftover-namespace check passed
+  ([run 43064412675](https://github.com/Julianakh9/NetVerify/actions/runs/43064412675)).
 
 Each job's log records the exact Python version used (in the "Set up
 Python" step) and the installed package versions (in the "Show installed
@@ -350,4 +426,4 @@ packages" step).
 
 ## Current Status
 
-**In Progress — Linux network namespace milestone complete**
+**In Progress — reversible fault injection milestone complete**
