@@ -8,6 +8,9 @@ version = "0.1.0"
 readme = "README.md"
 requires-python = ">=3.11"
 
+[project.scripts]
+netverify = "netverify.cli:run"
+
 [project.optional-dependencies]
 dev = ["pytest"]
 

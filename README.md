@@ -22,6 +22,9 @@ NetVerify is a Python-based network verification and automated testing framework
 - **UDP echo verification:** does a UDP echo service return exactly the payload it was sent?
 - **Structured results:** each check can return a `VerificationResult` describing the target, the outcome, a classified failure reason and the duration.
 - **Boolean APIs:** the original `True`/`False` functions still work as before.
+- **Command-line interface:** `netverify tcp`, `netverify udp` and
+  `netverify recover`, with text or JSON output and documented exit codes
+  (see [Command-Line Interface](#command-line-interface)).
 - **Linux network namespace topologies:** two temporary, isolated network
   namespaces joined by a virtual Ethernet (veth) link, with TCP checks run
   from inside a namespace (Linux only; see
@@ -89,6 +92,102 @@ results are unchanged from earlier versions.
 - Only `OSError` failures are turned into failed results (or `False`). Any
   other exception, such as a programming error, reaches the caller.
 - Sockets are always closed.
+
+## Command-Line Interface
+
+Installing NetVerify (see [Setup](#setup)) also installs a `netverify`
+command. `python -m netverify` works the same way.
+
+| Command | Checks |
+|---|---|
+| `netverify tcp HOST PORT` | A TCP connection can be established |
+| `netverify udp HOST PORT` | A UDP echo service returns exactly the payload sent |
+| `netverify recover HOST PORT --deadline S` | Polls a TCP connection until it succeeds or the deadline passes |
+
+| Option | Commands | Default |
+|---|---|---|
+| `--format {text,json}` | all | `text` |
+| `--timeout S` | all (for `recover`: the largest timeout for one attempt) | `2.0` |
+| `--debug` | all: show the full traceback for unexpected errors | off |
+| `--payload TEXT` | `udp`: text to send, UTF-8 encoded, 1–65507 bytes | `netverify-ping` |
+| `--show-payload` | `udp`: include payload contents in mismatch reports | off |
+| `--deadline S` | `recover` (required): seconds within which attempts may start | — |
+| `--interval S` | `recover`: seconds between attempts | `0.5` |
+
+`netverify --help` and `netverify COMMAND --help` describe every option.
+The commands call the same functions as the Python API
+(`verify_tcp_connection`, `verify_udp_echo`, `wait_for_recovery`), so results
+and their meaning are identical.
+
+### Examples
+
+```console
+$ netverify tcp 127.0.0.1 8080
+PASS  tcp 127.0.0.1:8080  connected in 0.3 ms
+
+$ netverify tcp 127.0.0.1 9
+FAIL  tcp 127.0.0.1:9  connection_refused: [Errno 61] Connection refused (0.2 ms)
+
+$ netverify udp 127.0.0.1 9999 --payload hello --timeout 1
+PASS  udp 127.0.0.1:9999  echo matched in 0.4 ms
+
+$ netverify recover 127.0.0.1 8080 --deadline 1 --interval 0.3
+FAIL  recover tcp 127.0.0.1:8080  not recovered: 4 attempts in 917.1 ms (deadline 1.00 s); last failure connection_refused: [Errno 61] Connection refused
+      failed attempts: connection_refused x4
+
+$ netverify tcp 127.0.0.1 8080 --format json
+{"schema_version": 1, "command": "tcp", "status": "passed", "exit_code": 0, "result": {"protocol": "tcp", "target": {"host": "127.0.0.1", "port": 8080}, "success": true, "duration_seconds": 0.000276, "failure": null}}
+```
+
+Using the exit code in a script or CI step:
+
+```bash
+if netverify tcp db.internal 5432 --timeout 3; then
+  echo "database reachable"
+fi
+```
+
+### Exit codes
+
+| Code | Meaning |
+|---|---|
+| `0` | Verification passed. For `recover`: success was observed within the deadline. |
+| `1` | Verification failed: the check ran and the target failed it. For `recover`: no success was observed, or it was observed only after the deadline. |
+| `2` | Invalid input: bad usage, an invalid port, host, number of seconds or payload. The message goes to standard error. Nothing is run. |
+| `3` | The check could not run normally: an unexpected or infrastructure error. Kept separate from `1`, so a broken check is never mistaken for an unreachable target. |
+| `130` | Interrupted with Ctrl-C. |
+
+Network errors that the checks classify, such as refused connections,
+timeouts and DNS failures, are verification failures (`1`), not errors (`3`).
+
+### Output formats
+
+- **Text** (default): one `PASS` or `FAIL` line on standard output. For
+  `recover`, a second line counts the failure reasons of failed attempts.
+- **JSON** (`--format json`): exactly one JSON document on one line of
+  standard output, for tools and CI. Every report has the same envelope:
+
+| Key | Value |
+|---|---|
+| `schema_version` | `1`. It changes only if the envelope changes incompatibly. |
+| `command` | `"tcp"`, `"udp"` or `"recover"` |
+| `status` | `"passed"`, `"failed"` or `"error"` |
+| `exit_code` | The process exit code (`0`, `1`, `3` or `130`) |
+| `result` | For `passed` and `failed`: the `VerificationResult` data (see [Result Model](#result-model)), or for `recover` the `RecoveryResult` data (see [Recovery Monitoring](#recovery-monitoring)) |
+| `error` | For `error` only: `{"type": ..., "message": ...}` |
+
+Errors (exit codes `3` and `130`) also print a one-line message to standard
+error in both formats. Invalid input (exit code `2`) produces no JSON. argparse
+reports it on standard error before any check runs.
+
+### Payload privacy
+
+UDP payloads are never included in reports. A `payload_mismatch` failure
+normally shows previews of the bytes sent and received. The CLI replaces
+that message with a fixed text unless `--show-payload` is given, while keeping
+the reason and other fields. A payload given with `--payload` is still
+visible to other local users in the process list, so do not pass secrets on
+the command line.
 
 ## Result Model
 
@@ -424,7 +523,10 @@ python3.11 -m venv .venv
 ```
 
 This installs `netverify` in editable mode, along with pytest from the `dev`
-optional dependencies defined in `pyproject.toml`.
+optional dependencies defined in `pyproject.toml`. It also installs the
+`netverify` command into the virtual environment (`.venv/bin/netverify`).
+NetVerify itself has no runtime dependencies beyond the Python standard
+library.
 
 ## Running the Tests
 
@@ -456,6 +558,8 @@ NETVERIFY_REQUIRE_NETNS=1 .venv/bin/python -m pytest -m netns   # fail instead o
 | `tests/test_udp_verify.py` | Unit (mocked) | Detailed UDP API, reply validation, duration and delegation |
 | `tests/test_tcp_integration.py` | Integration | Real TCP success and refused connections |
 | `tests/test_udp_integration.py` | Integration | Real UDP echo, payload mismatch and timeout |
+| `tests/test_cli.py` | Unit (mocked checks) | CLI arguments, validation, output formats, exit codes, payload hiding |
+| `tests/test_cli_integration.py` | Integration | CLI against real loopback servers, including `python -m netverify` and the `netverify` script |
 | `tests/test_recovery.py` | Unit (fake clock) and integration | Polling schedule, deadline semantics, attempt counting, invalid settings, exceptions; one real-socket recovery on `127.0.0.1` |
 | `tests/test_linux_topology.py` | Unit (fake runner) | Exact `ip` commands, cleanup after partial setup failures, cleanup retries |
 | `tests/test_linux_commands.py` | Integration | Running commands: errors, missing commands, timeouts, no shell |
@@ -508,6 +612,10 @@ It uses Python 3.11, the oldest supported version.
   jobs. The namespace job ran the healthy → fault → recovery test, and its
   leftover-namespace check passed
   ([run 43064412675](https://github.com/Julianakh9/NetVerify/actions/runs/43064412675)).
+- The first run with recovery monitoring, on commit `e3f8c6f`, passed all
+  four jobs. The namespace job ran the recovery polling test, and its
+  leftover-namespace check passed
+  ([run 43080592924](https://github.com/Julianakh9/NetVerify/actions/runs/43080592924)).
 
 Each job's log records the exact Python version used (in the "Set up
 Python" step) and the installed package versions (in the "Show installed
@@ -515,11 +623,12 @@ packages" step).
 
 ## Technologies
 
-- **In use:** Python 3.11–3.13, pytest, TCP and UDP sockets (`socket`
-  module), Linux network namespaces and veth pairs (iproute2), Git, GitHub
+- **In use:** Python 3.11–3.13, pytest, argparse, TCP and UDP sockets
+  (`socket` module), Linux network namespaces and veth pairs (iproute2), Git, GitHub
   Actions on Ubuntu Linux
 - **May be considered later:** Scapy
 
 ## Current Status
 
-**In Progress — reversible fault injection milestone complete**
+**In Progress — recovery monitoring (Milestone 5C) verified on Linux in CI;
+command-line interface (Milestone 6) in development**
