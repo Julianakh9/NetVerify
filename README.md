@@ -1,5 +1,7 @@
 # NetVerify
 
+[![Tests](https://github.com/Julianakh9/NetVerify/actions/workflows/tests.yml/badge.svg?branch=main)](https://github.com/Julianakh9/NetVerify/actions/workflows/tests.yml)
+
 ## Overview
 
 NetVerify is a Python-based network verification and automated testing framework.
@@ -25,7 +27,6 @@ NetVerify is a Python-based network verification and automated testing framework
 
 Not yet implemented:
 
-- Running the test suite in a Linux-based CI environment
 - More advanced network verification scenarios
 - IPv6 support
 - Configurable retries for UDP checks
@@ -178,7 +179,9 @@ mismatch messages show up to 32 bytes of each payload, plus their lengths.
   in `UNEXPECTED_SENDER` messages.
 - **No traceback in results.** A `Failure` keeps the exception's details but
   not the exception object.
-- **Tested on macOS only** so far.
+- **Tested platforms.** The suite runs locally on macOS and in CI on Ubuntu
+  Linux (see [Continuous Integration](#continuous-integration)). Windows is
+  not tested.
 
 ## Setup
 
@@ -220,12 +223,32 @@ pytest discovers tests in `tests/`, as configured in `pyproject.toml`.
   external hosts. UDP integration tests run a one-shot echo server in a
   worker thread, with a timeout on every wait.
 
+## Continuous Integration
+
+The [Tests workflow](.github/workflows/tests.yml) runs on GitHub Actions on
+every push to `main`, on every pull request, and on manual request.
+
+| Runner | Python versions |
+|---|---|
+| `ubuntu-24.04` | 3.11, 3.12, 3.13 |
+
+Each Python version runs as a separate job that installs NetVerify with
+`pip install -e ".[dev]"` and runs the full pytest suite, unit and
+integration tests together. A failing test fails the workflow.
+
+**Verified:** the first run, on commit `65fcdde`, passed for all three
+Python versions
+([run 43035620517](https://github.com/Julianakh9/NetVerify/actions/runs/43035620517)).
+Each job's log records the exact Python version used (in the "Set up
+Python" step) and the installed package versions (in the "Show installed
+packages" step).
+
 ## Technologies
 
-- **In use:** Python 3.11, pytest, TCP and UDP sockets (`socket` module), Git
-- **Planned:** Linux, CI
+- **In use:** Python 3.11–3.13, pytest, TCP and UDP sockets (`socket`
+  module), Git, GitHub Actions on Ubuntu Linux
 - **May be considered later:** Scapy
 
 ## Current Status
 
-**In Progress — Structured verification results milestone complete**
+**In Progress — Linux CI milestone complete**
