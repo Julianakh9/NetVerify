@@ -15,6 +15,7 @@ import pytest
 
 from netverify.linux.commands import DEFAULT_TIMEOUT, CommandError, run_command
 from netverify.linux.connectivity import tcp_listener, verify_tcp_in_namespace
+from netverify.linux.faults import LinkDown, link_is_up
 from netverify.linux.topology import (
     TopologyCleanupError,
     TopologySetupError,
@@ -107,6 +108,43 @@ def test_topology_does_not_change_host_interfaces_or_routes(netns_prerequisites)
     assert during == before
     assert after == before
     assert topology.left.interface not in during[0]
+
+
+def tcp_check(topology, timeout=2.0, listener_timeout=10.0):
+    """Connect from left to a fresh listener on right; return the result."""
+    with tcp_listener(topology, topology.right, timeout=listener_timeout) as port:
+        return verify_tcp_in_namespace(
+            topology, topology.left, topology.right.address, port, timeout=timeout
+        )
+
+
+# Failures that mean the packets had no working path. The exact reason
+# depends on kernel routing behaviour and is not yet established from a CI
+# run, so any of them is accepted. A refusal is not: a listener is running.
+NO_PATH = {FailureReason.NETWORK_UNREACHABLE, FailureReason.HOST_UNREACHABLE,
+           FailureReason.TIMEOUT}
+
+
+def test_connectivity_fails_while_link_is_down_and_returns_after_restore(topology):
+    before = tcp_check(topology)
+    assert before.success is True, before.failure
+
+    host_before = host_network_state()
+    with LinkDown(topology, topology.left):
+        assert link_is_up(topology, topology.left) is False
+        # A listener is running, so a failure cannot be a missing service.
+        # Its short timeout bounds how long it waits for a connection that
+        # cannot arrive.
+        during = tcp_check(topology, listener_timeout=3.0)
+        host_during = host_network_state()
+
+    assert during.success is False
+    assert during.reason in NO_PATH, during.failure
+    assert host_during == host_before  # The fault never touched the host.
+
+    assert link_is_up(topology, topology.left) is True
+    after = tcp_check(topology)
+    assert after.success is True, after.failure
 
 
 def test_close_removes_namespaces(netns_prerequisites):

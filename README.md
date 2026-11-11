@@ -22,6 +22,10 @@ NetVerify is a Python-based network verification and automated testing framework
 - **UDP echo verification:** does a UDP echo service return exactly the payload it was sent?
 - **Structured results:** each check can return a `VerificationResult` describing the target, the outcome, a classified failure reason and the duration.
 - **Boolean APIs:** the original `True`/`False` functions still work as before.
+- **Linux network namespace topologies:** two temporary, isolated network
+  namespaces joined by a virtual Ethernet (veth) link, with TCP checks run
+  from inside a namespace (Linux only; see
+  [Linux Network Namespaces](#linux-network-namespaces)).
 
 ### Planned
 
@@ -158,6 +162,63 @@ mismatch messages show up to 32 bytes of each payload, plus their lengths.
 4. The reply must come from the same IP address and port, and contain
    exactly the bytes that were sent.
 
+## Linux Network Namespaces
+
+The `netverify.linux` package builds a small, disposable test network on
+Linux and runs checks inside it. It is separate from the TCP and UDP
+modules, which do not depend on it, and importing it is safe on any
+platform.
+
+```python
+from netverify.linux import VethTopology, tcp_listener, verify_tcp_in_namespace
+
+with VethTopology() as topology:          # creates, then always removes
+    with tcp_listener(topology, topology.right) as port:
+        result = verify_tcp_in_namespace(
+            topology, topology.left, topology.right.address, port
+        )
+    print(result.success)
+```
+
+`VethTopology` creates:
+
+- two namespaces with random names, `netverify-<token>-left` and
+  `netverify-<token>-right`;
+- a veth pair whose two ends are created directly inside those namespaces;
+- the addresses `10.231.0.1/30` (left) and `10.231.0.2/30` (right) by
+  default, configurable with `VethTopology(network=...)`;
+- the veth interfaces and loopback set up in both namespaces.
+
+### Safety and privileges
+
+- **Nothing on the host changes.** No interface, address, route or firewall
+  rule is added to the host. A namespace test checks that the host's
+  interfaces and IPv4 routes are the same before, during and after.
+- **Only its own resources.** Cleanup deletes only the namespaces that this
+  topology created. Deleting a namespace also removes the veth end inside it.
+- **Limited privileges.** Only the `ip` commands that create, configure and
+  delete namespaces run as root, through `sudo -n`, which fails rather than
+  asking for a password. Commands run inside a namespace switch back to the
+  calling user with `setpriv`.
+- **No shell.** Every command is run as an explicit argument list.
+- **Cleanup runs even on failure.** It runs after a failed setup step or an
+  exception in the `with` block. If a deletion fails, `close()` raises
+  `TopologyCleanupError` and can be called again to retry.
+
+### Errors are kept separate
+
+| Outcome | Meaning |
+|---|---|
+| `TopologySetupError` | The test network could not be built. The message names the step and includes `ip`'s error output. |
+| `CommandError` / `ProbeError` | The check could not run inside the namespace, or printed no valid result. |
+| `VerificationResult` with a `failure` | The check ran, and the connection failed. |
+
+### Requirements
+
+Linux with `ip` (iproute2) and either root or passwordless `sudo`, plus
+`setpriv` (util-linux) when not running as root.
+`netverify.linux.missing_prerequisites()` lists what is missing.
+
 ## Current Limitations
 
 - **IPv4 only.** UDP checks use `AF_INET`.
@@ -181,7 +242,11 @@ mismatch messages show up to 32 bytes of each payload, plus their lengths.
   not the exception object.
 - **Tested platforms.** The suite runs locally on macOS and in CI on Ubuntu
   Linux (see [Continuous Integration](#continuous-integration)). Windows is
-  not tested.
+  not tested. Namespace tests have run only in CI, on Ubuntu 24.04 with
+  Python 3.11.
+- **Namespace topologies are Linux only,** and can only be left behind if
+  the process is killed before cleanup runs. To find leftovers:
+  `ip netns list | grep '^netverify-'`.
 
 ## Setup
 
@@ -206,9 +271,18 @@ From the project root:
 
 pytest discovers tests in `tests/`, as configured in `pyproject.toml`.
 
+Namespace tests are marked `netns`. Without Linux and the required
+privileges they are skipped, and the reason is shown with `-ra`:
+
+```bash
+.venv/bin/python -m pytest -m "not netns"   # everything except namespace tests
+.venv/bin/python -m pytest -m netns -ra     # only namespace tests
+NETVERIFY_REQUIRE_NETNS=1 .venv/bin/python -m pytest -m netns   # fail instead of skipping
+```
+
 | File | Type | What it covers |
 |---|---|---|
-| `tests/test_results.py` | Unit | Result model rules, immutability and `to_dict()` |
+| `tests/test_results.py` | Unit | Result model rules, immutability, `to_dict()` and `from_dict()` |
 | `tests/test_diagnostics.py` | Unit | Classification of each error type and errno value |
 | `tests/test_tcp.py` | Unit (mocked) | Boolean TCP API |
 | `tests/test_tcp_verify.py` | Unit (mocked) | Detailed TCP API, classification, duration and delegation |
@@ -216,29 +290,53 @@ pytest discovers tests in `tests/`, as configured in `pyproject.toml`.
 | `tests/test_udp_verify.py` | Unit (mocked) | Detailed UDP API, reply validation, duration and delegation |
 | `tests/test_tcp_integration.py` | Integration | Real TCP success and refused connections |
 | `tests/test_udp_integration.py` | Integration | Real UDP echo, payload mismatch and timeout |
+| `tests/test_linux_topology.py` | Unit (fake runner) | Exact `ip` commands, cleanup after partial setup failures, cleanup retries |
+| `tests/test_linux_commands.py` | Integration | Running commands: errors, missing commands, timeouts, no shell |
+| `tests/test_linux_connectivity.py` | Integration | The in-namespace check and listener, run on `127.0.0.1` without namespaces |
+| `tests/test_netns_integration.py` | Namespace (`netns`) | Real namespaces: configuration, connectivity, host isolation, cleanup |
 
-- **Unit tests** mock the socket layer and the clock where needed, so they
-  use no network or DNS access and never assert real timings.
+- **Unit tests** mock the socket layer, the clock or the command runner
+  where needed, so they use no network or DNS access and never assert real
+  timings.
 - **Integration tests** use real sockets on `127.0.0.1` only and contact no
   external hosts. UDP integration tests run a one-shot echo server in a
   worker thread, with a timeout on every wait.
+- **Namespace tests** need Linux and privileges, and send traffic only
+  between the two namespaces of a test topology.
 
 ## Continuous Integration
 
 The [Tests workflow](.github/workflows/tests.yml) runs on GitHub Actions on
 every push to `main`, on every pull request, and on manual request.
 
-| Runner | Python versions |
-|---|---|
-| `ubuntu-24.04` | 3.11, 3.12, 3.13 |
+| Job | Runner | Python | Privileges | Runs |
+|---|---|---|---|---|
+| `pytest (Python …)` | `ubuntu-24.04` | 3.11, 3.12, 3.13 (one job each) | None | Every test except namespace tests (`-m "not netns"`) |
+| `Linux namespaces` | `ubuntu-24.04` | 3.11 | `sudo -n` for `ip` commands only | Namespace tests only (`-m netns`) |
 
-Each Python version runs as a separate job that installs NetVerify with
-`pip install -e ".[dev]"` and runs the full pytest suite, unit and
-integration tests together. A failing test fails the workflow.
+Every job installs NetVerify with `pip install -e ".[dev]"`. A failing test
+fails the workflow.
 
-**Verified:** the first run, on commit `65fcdde`, passed for all three
-Python versions
-([run 43035620517](https://github.com/Julianakh9/NetVerify/actions/runs/43035620517)).
+The namespace job:
+
+1. Checks that `ip`, `setpriv` and passwordless `sudo` are available.
+2. Runs pytest as the normal runner user, with `NETVERIFY_REQUIRE_NETNS=1`.
+   Missing prerequisites then fail the tests instead of skipping them, and
+   if no namespace test is collected, pytest's exit status also fails the
+   job.
+3. Always checks afterwards that no `netverify-*` namespace was left
+   behind, even if earlier steps failed.
+
+It uses Python 3.11, the oldest supported version.
+
+**Verified:**
+
+- The first run, on commit `65fcdde`, passed for all three Python versions
+  ([run 43035620517](https://github.com/Julianakh9/NetVerify/actions/runs/43035620517)).
+- The first run with namespace tests, on commit `40eaba4`, passed all four
+  jobs, including the namespace job's leftover-namespace check
+  ([run 43059673280](https://github.com/Julianakh9/NetVerify/actions/runs/43059673280)).
+
 Each job's log records the exact Python version used (in the "Set up
 Python" step) and the installed package versions (in the "Show installed
 packages" step).
@@ -246,9 +344,10 @@ packages" step).
 ## Technologies
 
 - **In use:** Python 3.11–3.13, pytest, TCP and UDP sockets (`socket`
-  module), Git, GitHub Actions on Ubuntu Linux
+  module), Linux network namespaces and veth pairs (iproute2), Git, GitHub
+  Actions on Ubuntu Linux
 - **May be considered later:** Scapy
 
 ## Current Status
 
-**In Progress — Linux CI milestone complete**
+**In Progress — Linux network namespace milestone complete**

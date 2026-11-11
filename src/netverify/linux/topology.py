@@ -219,9 +219,7 @@ class VethTopology:
 
     def exec_command(self, endpoint: Endpoint, args: Sequence[str]) -> list[str]:
         """Return the full argument list that runs args inside endpoint's namespace."""
-        self._require_active()
-        if endpoint not in (self.left, self.right):
-            raise ValueError(f"{endpoint!r} does not belong to this topology")
+        self._require_own_endpoint(endpoint)
         return [
             *self._privilege, "ip", "netns", "exec", endpoint.namespace,
             *self._drop_privileges, *args,
@@ -250,7 +248,37 @@ class VethTopology:
             text=True,
         )
 
+    # Link state
+
+    def set_link_state(
+        self, endpoint: Endpoint, *, up: bool, timeout: float = DEFAULT_TIMEOUT
+    ) -> None:
+        """Bring endpoint's veth interface administratively up or down.
+
+        Only the topology's own veth interfaces can be changed: the interface
+        name comes from the endpoint, and the endpoint must belong to this
+        active topology. This is the only privileged command available
+        after setup.
+
+        Raises:
+            CommandError: The `ip` command failed or timed out.
+            RuntimeError: The topology is not active.
+            ValueError: endpoint does not belong to this topology.
+        """
+        self._require_own_endpoint(endpoint)
+        state = "up" if up else "down"
+        self._run(
+            [*self._privilege, "ip", "-n", endpoint.namespace,
+             "link", "set", "dev", endpoint.interface, state],
+            timeout=timeout,
+        )
+
     # Internal helpers
+
+    def _require_own_endpoint(self, endpoint: Endpoint) -> None:
+        self._require_active()
+        if endpoint not in (self.left, self.right):
+            raise ValueError(f"{endpoint!r} does not belong to this topology")
 
     def _create_namespace(self, name: str) -> None:
         self._setup_step(f"create namespace {name}", ["ip", "netns", "add", name])
