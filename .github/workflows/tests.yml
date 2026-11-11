@@ -1,0 +1,58 @@
+name: Tests
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+# Least privilege: the workflow only needs to read the repository.
+permissions:
+  contents: read
+
+# Cancel an in-progress run when a newer commit arrives on the same branch or PR.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  pytest:
+    name: pytest (Python ${{ matrix.python-version }})
+    # A fixed Ubuntu version keeps runs reproducible; update it deliberately.
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+
+    strategy:
+      # Run every Python version even if one fails, to see the full picture.
+      fail-fast: false
+      matrix:
+        python-version: ["3.11", "3.12", "3.13"]
+
+    env:
+      PIP_DISABLE_PIP_VERSION_CHECK: "1"
+
+    steps:
+      # Actions are pinned to full commit SHAs, so a moved tag cannot change
+      # what runs. The comment records the release each SHA belongs to.
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # Later steps do not need Git credentials, so do not store them.
+          persist-credentials: false
+
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Install NetVerify with development dependencies
+        run: python -m pip install -e ".[dev]"
+
+      # Record exact versions, to help diagnose failures caused by new releases.
+      - name: Show installed packages
+        run: python -m pip freeze
+
+      # Runs unit and integration tests. A failing test gives a non-zero exit
+      # code, which fails this job and the workflow.
+      - name: Run test suite
+        run: python -m pytest -v -ra
