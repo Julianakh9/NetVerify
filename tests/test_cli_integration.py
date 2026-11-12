@@ -156,3 +156,65 @@ def test_entry_points_report_exit_codes(command, tcp_port, closed_port):
     assert invalid.returncode == 2
     assert "must be 1-65535" in invalid.stderr
     assert "Traceback" not in invalid.stderr
+
+
+@pytest.mark.parametrize("command", [
+    pytest.param([sys.executable, "-m", "netverify"], id="python-m"),
+    pytest.param(None, id="console-script"),
+])
+def test_entry_points_reject_huge_durations_with_exit_2(command, tcp_port):
+    command = command or console_script()
+
+    timeout = run_process(command, "tcp", "127.0.0.1", str(tcp_port), "--timeout", "1e300")
+    deadline = run_process(command, "recover", "127.0.0.1", str(tcp_port), "--deadline", "1e300")
+
+    for process in (timeout, deadline):
+        assert process.returncode == 2
+        assert "must be at most 86400" in process.stderr
+        assert "Traceback" not in process.stderr
+        assert process.stdout == ""
+
+
+# A real process whose verification raises an unexpected exception. The
+# exception is injected because a working loopback check has no natural way
+# to raise one; everything after it (main, run, sys.exit) is the real code.
+FAILING_CLI = (
+    "import sys\n"
+    "from unittest.mock import patch\n"
+    "from netverify import cli\n"
+    "sys.argv[0] = 'netverify'\n"
+    "with patch.object(cli, 'verify_tcp_connection', side_effect=RuntimeError('injected')):\n"
+    "    cli.run()\n"
+)
+
+
+@pytest.mark.parametrize("output", ["text", "json"])
+def test_debug_process_exits_3_on_unexpected_error(output):
+    process = run_process([sys.executable, "-c", FAILING_CLI],
+                          "tcp", "127.0.0.1", "9", "--debug", "--format", output)
+
+    assert process.returncode == 3  # Not 1, which would mean "verification failed".
+    assert "Traceback (most recent call last)" in process.stderr
+    assert "RuntimeError: injected" in process.stderr
+    if output == "json":
+        report = json.loads(process.stdout)
+        assert report["status"] == "error" and report["exit_code"] == 3
+    else:
+        assert process.stdout == ""
+
+
+def test_process_without_debug_exits_3_without_traceback():
+    process = run_process([sys.executable, "-c", FAILING_CLI], "tcp", "127.0.0.1", "9")
+
+    assert process.returncode == 3
+    assert "netverify: error: RuntimeError: injected" in process.stderr
+    assert "Traceback" not in process.stderr
+
+
+def test_debug_process_keeps_verification_failure_at_exit_1(closed_port):
+    process = run_process([sys.executable, "-m", "netverify"],
+                          "tcp", "127.0.0.1", str(closed_port), "--debug")
+
+    assert process.returncode == 1
+    assert process.stdout.startswith("FAIL")
+    assert "Traceback" not in process.stderr

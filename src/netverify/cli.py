@@ -14,6 +14,7 @@ import argparse
 import json
 import math
 import sys
+import traceback
 from collections.abc import Callable, Sequence
 from importlib.metadata import PackageNotFoundError, version
 
@@ -33,6 +34,10 @@ from netverify.udp import verify_udp_echo
 
 # The largest UDP payload that fits in one IPv4 datagram.
 MAX_UDP_PAYLOAD = 65507
+
+# The largest --timeout, --deadline or --interval accepted (one day). Larger
+# finite values would overflow socket and clock operations.
+MAX_SECONDS = 86400.0
 
 EPILOG = """\
 exit codes:
@@ -60,10 +65,14 @@ def main(argv: Sequence[str] | None = None) -> int:
         _report_error(args, exc, ExitCode.INTERRUPTED, "interrupted")
         return ExitCode.INTERRUPTED
     except Exception as exc:
+        # With --debug, show the traceback too, but keep exit code 3 (and
+        # the JSON error report): an uncaught exception would exit with 1,
+        # which means "verification failed".
         if args.debug:
-            raise
+            traceback.print_exc()
+        hint = "" if args.debug else " (use --debug for the traceback)"
         _report_error(args, exc, ExitCode.INFRASTRUCTURE_ERROR,
-                      f"{type(exc).__name__}: {exc} (use --debug for the traceback)")
+                      f"{type(exc).__name__}: {exc}{hint}")
         return ExitCode.INFRASTRUCTURE_ERROR
 
     if args.format == "json":
@@ -185,6 +194,10 @@ def _seconds(text: str) -> float:
         raise argparse.ArgumentTypeError(f"invalid number of seconds {text!r}") from None
     if not math.isfinite(value) or value <= 0:
         raise argparse.ArgumentTypeError(f"invalid number of seconds {text!r}: must be positive")
+    if value > MAX_SECONDS:
+        raise argparse.ArgumentTypeError(
+            f"invalid number of seconds {text!r}: must be at most {MAX_SECONDS:g}"
+        )
     return value
 
 

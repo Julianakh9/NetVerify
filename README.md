@@ -108,11 +108,15 @@ command. `python -m netverify` works the same way.
 |---|---|---|
 | `--format {text,json}` | all | `text` |
 | `--timeout S` | all (for `recover`: the largest timeout for one attempt) | `2.0` |
-| `--debug` | all: show the full traceback for unexpected errors | off |
+| `--debug` | all: also print the full traceback of an unexpected error to standard error (the exit code stays `3`) | off |
 | `--payload TEXT` | `udp`: text to send, UTF-8 encoded, 1–65507 bytes | `netverify-ping` |
 | `--show-payload` | `udp`: include payload contents in mismatch reports | off |
 | `--deadline S` | `recover` (required): seconds within which attempts may start | — |
 | `--interval S` | `recover`: seconds between attempts | `0.5` |
+
+Durations (`--timeout`, `--deadline`, `--interval`) must be greater than 0
+and at most 86400 seconds (one day). Anything else, including `nan`, `inf`
+and huge values such as `1e300`, is invalid input (exit code `2`).
 
 `netverify --help` and `netverify COMMAND --help` describe every option.
 The commands call the same functions as the Python API
@@ -154,7 +158,7 @@ fi
 | `0` | Verification passed. For `recover`: success was observed within the deadline. |
 | `1` | Verification failed: the check ran and the target failed it. For `recover`: no success was observed, or it was observed only after the deadline. |
 | `2` | Invalid input: bad usage, an invalid port, host, number of seconds or payload. The message goes to standard error. Nothing is run. |
-| `3` | The check could not run normally: an unexpected or infrastructure error. Kept separate from `1`, so a broken check is never mistaken for an unreachable target. |
+| `3` | The check could not run normally: an unexpected or infrastructure error. Kept separate from `1`, so a broken check is never mistaken for an unreachable target. Also `3` with `--debug`, which adds the traceback on standard error; with `--format json`, the error report is still printed on standard output. |
 | `130` | Interrupted with Ctrl-C. |
 
 Network errors that the checks classify, such as refused connections,

@@ -207,6 +207,56 @@ def test_invalid_input_exits_2_without_traceback(capsys, argv, message):
     assert not (tcp.called or udp.called or wait.called)  # Nothing ran.
 
 
+# Durations: each of --timeout, --deadline and --interval accepts values up to
+# MAX_SECONDS. Larger finite values must be invalid input (2), never reach
+# socket or timing calls (where 1e300 overflows) and never exit with 3.
+
+DURATION_OPTIONS = [
+    pytest.param(["tcp", "h", "80"], "--timeout", id="tcp-timeout"),
+    pytest.param(["udp", "h", "7"], "--timeout", id="udp-timeout"),
+    pytest.param(["recover", "h", "80", "--deadline", "5"], "--timeout", id="recover-timeout"),
+    pytest.param(["recover", "h", "80", "--deadline", "5"], "--interval", id="recover-interval"),
+    pytest.param(["recover", "h", "80"], "--deadline", id="recover-deadline"),
+]
+
+
+def test_max_seconds_is_one_day():
+    assert cli.MAX_SECONDS == 86400
+
+
+@pytest.mark.parametrize("value", ["86400", "86400.0", "8.64e4", "86399.999", "0.001"])
+@pytest.mark.parametrize(("argv", "option"), DURATION_OPTIONS)
+def test_durations_up_to_the_maximum_are_accepted(capsys, argv, option, value):
+    with patch.object(cli, "verify_tcp_connection", return_value=OK) as tcp, \
+         patch.object(cli, "verify_udp_echo", return_value=OK) as udp, \
+         patch.object(cli, "wait_for_recovery", return_value=recovery([OK], 0.1)) as wait:
+        code, _, err = run([*argv, option, value], capsys)
+
+    assert code == 0, err
+    calls = tcp.call_args_list + udp.call_args_list + wait.call_args_list
+    assert len(calls) == 1
+    kwargs = calls[0].kwargs
+    passed_value = {"--timeout": kwargs.get("timeout", kwargs.get("attempt_timeout")),
+                    "--interval": kwargs.get("interval"),
+                    "--deadline": kwargs.get("deadline")}[option]
+    assert passed_value == float(value)
+
+
+@pytest.mark.parametrize("value", ["86400.001", "86401", "1e6", "1e300", "1.7976931348623157e308"])
+@pytest.mark.parametrize(("argv", "option"), DURATION_OPTIONS)
+def test_durations_above_the_maximum_exit_2(capsys, argv, option, value):
+    with patch.object(cli, "verify_tcp_connection") as tcp, \
+         patch.object(cli, "verify_udp_echo") as udp, \
+         patch.object(cli, "wait_for_recovery") as wait:
+        code, out, err = run([*argv, option, value], capsys)
+
+    assert code == ExitCode.INVALID_INPUT == 2
+    assert "must be at most 86400" in err
+    assert "Traceback" not in err
+    assert out == ""
+    assert not (tcp.called or udp.called or wait.called)  # Nothing ran.
+
+
 @pytest.mark.parametrize("argv", [["--help"], ["tcp", "--help"], ["--version"]])
 def test_help_and_version_exit_0(capsys, argv):
     code, out, _ = run(argv, capsys)
@@ -253,10 +303,42 @@ def test_unexpected_error_in_json_mode_is_an_error_report(capsys):
     assert "probe broke" in err
 
 
-def test_debug_shows_the_original_exception(capsys):
+def test_debug_prints_the_traceback_and_still_exits_3(capsys):
     with patch.object(cli, "verify_tcp_connection", side_effect=RuntimeError("resolver broke")):
-        with pytest.raises(RuntimeError, match="resolver broke"):
-            cli.main(["tcp", "192.0.2.10", "80", "--debug"])
+        code, out, err = run(["tcp", "192.0.2.10", "80", "--debug"], capsys)
+
+    assert code == ExitCode.INFRASTRUCTURE_ERROR == 3  # Not 1: nothing failed verification.
+    assert "Traceback (most recent call last)" in err
+    assert "RuntimeError: resolver broke" in err
+    assert "netverify: error: RuntimeError: resolver broke" in err
+    assert "use --debug" not in err  # Already in debug mode.
+    assert out == ""
+
+
+def test_debug_in_json_mode_keeps_the_error_report_on_stdout(capsys):
+    with patch.object(cli, "wait_for_recovery", side_effect=RuntimeError("probe broke")):
+        code, report, err = run_json(["recover", "192.0.2.10", "80", "--deadline", "1",
+                                      "--debug"], capsys)
+
+    assert code == 3
+    assert report == {
+        "schema_version": SCHEMA_VERSION,
+        "command": "recover",
+        "status": "error",
+        "exit_code": 3,
+        "error": {"type": "RuntimeError", "message": "probe broke"},
+    }
+    assert "Traceback (most recent call last)" in err  # The traceback goes to stderr only.
+
+
+def test_debug_does_not_change_verification_results(capsys):
+    with patch.object(cli, "verify_tcp_connection", return_value=REFUSED):
+        failed, _, _ = run(["tcp", "192.0.2.10", "80", "--debug"], capsys)
+    with patch.object(cli, "verify_tcp_connection", return_value=OK):
+        passed, _, err = run(["tcp", "192.0.2.10", "80", "--debug"], capsys)
+
+    assert (failed, passed) == (1, 0)
+    assert "Traceback" not in err
 
 
 def test_interrupt_exits_130(capsys):
