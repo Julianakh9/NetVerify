@@ -2,9 +2,51 @@
 
 [![Tests](https://github.com/Julianakh9/NetVerify/actions/workflows/tests.yml/badge.svg?branch=main)](https://github.com/Julianakh9/NetVerify/actions/workflows/tests.yml)
 
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+
 ## Overview
 
-NetVerify is a Python-based network verification and automated testing framework.
+NetVerify is a Python network verification and automated testing framework.
+It checks whether TCP services accept connections and UDP echo services
+answer correctly. Each outcome comes back as a structured, classified result
+rather than a bare `True` or `False`. It can also poll a service until it
+recovers. On Linux, it builds disposable network namespaces and injects
+reversible link faults, so recovery behaviour can be tested without touching
+the host network.
+
+It has no runtime dependencies beyond the Python standard library, and it
+can be used as a Python library or as the `netverify` command.
+
+### Intended use cases
+
+- **Scripts and CI steps** that must know whether a service is reachable,
+  using documented exit codes and one-line JSON reports.
+- **Readiness and recovery checks:** waiting, within a bounded deadline, for
+  a service to accept connections after a restart or deployment.
+- **Diagnosing connection failures,** with the cause classified as refused,
+  timed out, unreachable, DNS failure, wrong UDP sender or payload mismatch.
+- **Testing network failure handling on Linux:** take a virtual link down,
+  check that connections fail, restore it and check that they recover, all
+  inside isolated namespaces.
+
+It is a verification tool, not a monitoring service. It runs one check (or
+one bounded recovery poll) per call and keeps no history.
+
+### Architecture
+
+| Module | Responsibility |
+|---|---|
+| `netverify.tcp`, `netverify.udp` | The checks. Detailed (`verify_*`) and Boolean (`check_*`) APIs. |
+| `netverify.results` | The immutable result model: `VerificationResult`, `Target`, `Failure`, `FailureReason` |
+| `netverify.diagnostics` | Classifies socket errors into a `FailureReason` |
+| `netverify.recovery` | `wait_for_recovery()` and `RecoveryResult`: bounded polling of any check |
+| `netverify.reporting` | JSON report envelope, exit codes, text formatting, payload redaction |
+| `netverify.cli` | The `netverify` command: parses arguments, calls the APIs above, reports |
+| `netverify.linux` | Linux only: namespace topologies, in-namespace checks, fault injection |
+
+The checks, result model and recovery logic do not import `netverify.linux`,
+and the CLI adds no networking of its own: every command calls the same
+public functions a Python user would.
 
 ## Goals
 
@@ -36,13 +78,42 @@ NetVerify is a Python-based network verification and automated testing framework
   the duration of a `with` block, and restore it afterwards (Linux only; see
   [Reversible Fault Injection](#reversible-fault-injection)).
 
-### Planned
+### Possible future work
 
-Not yet implemented:
+Not implemented in v0.1.0:
 
 - More advanced network verification scenarios
 - IPv6 support
 - Configurable retries for UDP checks
+
+## Installation
+
+Requirements:
+
+- Python 3.11 or newer (tested with 3.11, 3.12 and 3.13).
+- No third-party runtime dependencies.
+- For the Linux namespace features only: see
+  [Requirements](#requirements) under Linux Network Namespaces.
+
+NetVerify is not published on PyPI. Install it from the GitHub repository:
+
+```bash
+python3 -m venv .venv
+.venv/bin/python -m pip install "git+https://github.com/Julianakh9/NetVerify.git@v0.1.0"
+.venv/bin/netverify --version     # netverify 0.1.0
+```
+
+Or from a local clone:
+
+```bash
+git clone https://github.com/Julianakh9/NetVerify.git
+cd NetVerify
+python3 -m venv .venv
+.venv/bin/python -m pip install .
+```
+
+Both install the `netverify` package and the `netverify` command. For
+development, with pytest and an editable install, see [Setup](#setup).
 
 ## Usage
 
@@ -519,7 +590,7 @@ attempt's subprocess overhead past the deadline.
 
 ## Setup
 
-Requires Python 3.11 or newer. From the project root:
+For development. Requires Python 3.11 or newer. From the project root:
 
 ```bash
 python3.11 -m venv .venv
@@ -624,6 +695,10 @@ It uses Python 3.11, the oldest supported version.
   passed all four jobs. The CLI tests, including the installed `netverify`
   script, ran in all three Python jobs
   ([run 43082568045](https://github.com/Julianakh9/NetVerify/actions/runs/43082568045)).
+- The run with the final CLI corrections (duration limits and `--debug`
+  exit codes), on commit `40e9247`, passed all four jobs, including the
+  leftover-namespace check
+  ([run 43263893574](https://github.com/Julianakh9/NetVerify/actions/runs/43263893574)).
 
 Each job's log records the exact Python version used (in the "Set up
 Python" step) and the installed package versions (in the "Show installed
@@ -632,11 +707,20 @@ packages" step).
 ## Technologies
 
 - **In use:** Python 3.11–3.13, pytest, argparse, TCP and UDP sockets
-  (`socket` module), Linux network namespaces and veth pairs (iproute2), Git, GitHub
-  Actions on Ubuntu Linux
+  (`socket` module), Linux network namespaces and veth pairs (iproute2),
+  setuptools packaging, Git, GitHub Actions on Ubuntu Linux
 - **May be considered later:** Scapy
 
 ## Current Status
 
-**In Progress — command-line interface (Milestone 6) verified in CI;
-final quality review next**
+**v0.1.0, the first release.** Every feature listed under
+[Implemented](#implemented) is complete and covered by the test suite. The
+suite passes on Python 3.11, 3.12 and 3.13, and the namespace tests on Linux
+(see [Continuous Integration](#continuous-integration)). The version number
+marks an early release: the Python API and the JSON report format
+(`schema_version` 1) may still change in later 0.x versions.
+
+## License
+
+NetVerify is released under the [MIT License](LICENSE).
+Copyright (c) 2026 Juliana Khoury.

@@ -1,12 +1,40 @@
 [build-system]
-requires = ["setuptools>=61.0"]
+# 77.0 is the first setuptools release that supports SPDX license
+# expressions (`license = "MIT"`) and `license-files`.
+requires = ["setuptools>=77.0"]
 build-backend = "setuptools.build_meta"
 
 [project]
 name = "netverify"
 version = "0.1.0"
+description = "Network verification and testing: TCP and UDP checks, recovery monitoring, structured reports, and Linux network-namespace fault injection."
 readme = "README.md"
 requires-python = ">=3.11"
+license = "MIT"
+license-files = ["LICENSE"]
+authors = [{ name = "Juliana Khoury" }]
+keywords = ["network", "verification", "testing", "tcp", "udp", "network-namespaces", "fault-injection"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Environment :: Console",
+    "Intended Audience :: Developers",
+    "Intended Audience :: System Administrators",
+    "Operating System :: MacOS",
+    "Operating System :: POSIX :: Linux",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3 :: Only",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Software Development :: Testing",
+    "Topic :: System :: Networking",
+    "Topic :: System :: Networking :: Monitoring",
+]
+
+[project.urls]
+Homepage = "https://github.com/Julianakh9/NetVerify"
+Repository = "https://github.com/Julianakh9/NetVerify"
+Issues = "https://github.com/Julianakh9/NetVerify/issues"
 
 [project.scripts]
 netverify = "netverify.cli:run"
