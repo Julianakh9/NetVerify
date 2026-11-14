@@ -11,6 +11,7 @@ with different capability settings, and records what happened.
 `collect` exits 0 even when experiments fail: failures are findings.
 """
 
+import errno
 import json
 import os
 import platform
@@ -195,7 +196,7 @@ def _summary(record):
     keys = ("resuid", "resgid", "groups", "home", "home_writable", "scapy_version",
             "scapy_import_seconds", "socket_owner_uid", "request", "send_seconds",
             "receive_seconds", "outcome", "exception", "python_warnings", "scapy_log",
-            "spawned_subprocesses", "total_seconds")
+            "spawned_subprocesses", "open_sockets_at_end", "total_seconds")
     out = {"variant": record["variant"], "from": record["endpoint"],
            "wall_seconds": record["wall_seconds"], "returncode": record.get("returncode")}
     out.update({k: p[k] for k in keys if p.get(k) not in (None, [], {})})
@@ -261,28 +262,76 @@ def check(path):
     expect("Scapy imported in every variant",
            all((r.get("probe", {}).get("exception") or {}).get("stage") != "import scapy"
                for r in report.get("caps", {}).values()))
-    chosen = report.get("chosen_variant")
-    expect("a non-root CAP_NET_RAW variant works", chosen)
+    for variant in ("basic", "hardened"):
+        expect(f"{variant} CAP_NET_RAW variant opens a packet socket as uid {uid}",
+               _caps_ok(report.get("caps", {}).get(variant, {})))
+    hardened = report.get("caps", {}).get("hardened", {}).get("probe", {})
+    hardened_status = hardened.get("caps_after_open", {})
+    expect("hardened variant: bounding set is CAP_NET_RAW only and no-new-privs is set",
+           hardened_status.get("CapBnd") == NET_RAW_ONLY
+           and hardened_status.get("NoNewPrivs") == "1")
+    expect("packet experiments used the hardened variant",
+           report.get("chosen_variant") == "hardened")
+
+    # Every packet run, whichever path it takes: the calling user, only
+    # CAP_NET_RAW at every stage that was observed, no socket left open,
+    # and a normal exit.
     for section in ("icmp", "arp"):
         for name, record in report.get(section, {}).items():
             p = record.get("probe", {})
-            stages = [p[s]["CapEff"] for s in p if s.startswith("caps_after_open")
-                      or s in ("caps_after_send", "caps_after_receive")]
-            expect(f"{section} {name}: runs as uid {uid} with only CAP_NET_RAW",
-                   p.get("resuid") == [uid] * 3 and stages and set(stages) == {NET_RAW_ONLY}
-                   and p.get("socket_owner_uid") == str(uid))
-    for name in ("healthy", "healthy_reverse", "source_link_restored", "peer_link_restored"):
-        expect(f"icmp {name}: echo reply with matching payload",
+            observed = [p[key]["CapEff"] for key in p
+                        if key.startswith("caps_") and isinstance(p[key], dict)]
+            expect(f"{section} {name}: uid {uid}, only CAP_NET_RAW at all "
+                   f"{len(observed)} observed stages, no open sockets at exit",
+                   record.get("returncode") == 0
+                   and p.get("resuid") == [uid] * 3
+                   and observed and set(observed) == {NET_RAW_ONLY}
+                   and p.get("open_sockets_at_end") == 0)
+
+    # Path 1: the socket opened. It must be owned by the calling user, and
+    # CAP_NET_RAW must be the only capability through open, send and receive.
+    opened = ("healthy", "healthy_reverse", "healthy_basic", "source_link_restored",
+              "peer_link_down", "peer_link_restored")
+    for section in ("icmp", "arp"):
+        for name in opened:
+            p = report.get(section, {}).get(name, {}).get("probe", {})
+            stages = [p.get(s, {}).get("CapEff")
+                      for s in ("caps_after_open", "caps_after_send", "caps_after_receive")]
+            expect(f"{section} {name}: socket opened, owned by uid {uid}, CAP_NET_RAW only "
+                   "after open, send and receive",
+                   p.get("exception") is None
+                   and p.get("socket_owner_uid") == str(uid)
+                   and stages == [NET_RAW_ONLY] * 3)
+
+    # Path 2: the source interface is down. Opening the socket must fail
+    # with ENETDOWN, so no socket owner or post-open observation can exist.
+    for section, stage in (("icmp", "open L3 socket"), ("arp", "open L2 socket")):
+        p = report.get(section, {}).get("source_link_down", {}).get("probe", {})
+        error = p.get("exception") or {}
+        expect(f"{section} source_link_down: OSError ENETDOWN ({errno.ENETDOWN}) at "
+               f"'{stage}', with no socket owner or post-open observations",
+               error.get("type") == "OSError" and error.get("errno") == errno.ENETDOWN
+               and error.get("stage") == stage
+               and "socket_owner_uid" not in p
+               and not any(k in p for k in ("caps_after_open", "caps_after_send",
+                                            "caps_after_receive"))
+               and "outcome" not in p)
+
+    for name in ("healthy", "healthy_reverse", "healthy_basic", "source_link_restored",
+                 "peer_link_restored"):
+        expect(f"icmp {name}: echo reply from the target with matching payload",
                outcome("icmp", name).get("kind") == "echo_reply"
                and outcome("icmp", name).get("payload_match"))
         expect(f"arp {name}: reply with the expected MAC",
                outcome("arp", name).get("kind") == "arp_reply"
                and outcome("arp", name).get("mac_match"))
-    for name in ("source_link_down", "peer_link_down"):
-        for section, good in (("icmp", "echo_reply"), ("arp", "arp_reply")):
-            expect(f"{section} {name}: no successful reply", outcome(section, name).get("kind")
-                   not in (None, good) or report.get(section, {}).get(name, {}).get("probe", {})
-                   .get("exception"))
+    for section in ("icmp", "arp"):
+        expect(f"{section} peer_link_down: timeout, no reply",
+               outcome(section, "peer_link_down").get("kind") == "timeout")
+    expect("link reads down during the fault and up after each restore",
+           report.get("link_left_down_reads_up") is False
+           and report.get("link_left_restored_reads_up") is True
+           and report.get("link_right_restored_reads_up") is True)
     cleanup = report.get("cleanup", {})
     expect("no namespaces left", cleanup.get("namespaces_left") == [])
     expect("host links and routes unchanged", cleanup.get("host_unchanged") is True)

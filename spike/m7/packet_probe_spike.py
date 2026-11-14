@@ -69,6 +69,17 @@ def status() -> dict[str, str]:
     return fields
 
 
+def open_sockets() -> int:
+    """How many sockets this process still has open (any kind)."""
+    count = 0
+    for fd in os.listdir("/proc/self/fd"):
+        try:
+            count += os.readlink(f"/proc/self/fd/{fd}").startswith("socket:")
+        except OSError:
+            pass  # The fd used by listdir itself is already closed.
+    return count
+
+
 def socket_owner_uid(sock) -> str | None:  # type: ignore[no-untyped-def]
     """The User column of /proc/self/net/packet for this packet socket."""
     inode = str(os.fstat(sock.fileno()).st_ino)
@@ -246,6 +257,7 @@ def _run(args: argparse.Namespace, home: str | None, scratch: str) -> int:
         out["exception"] = {"stage": STAGE, "type": type(exc).__name__,
                             "errno": getattr(exc, "errno", None), "message": str(exc)[:500]}
     out["caps_end"] = status()
+    out["open_sockets_at_end"] = open_sockets()
     out["scapy_files_written"] = sorted(
         os.path.relpath(os.path.join(root, name), scratch)
         for root, dirs, files in os.walk(scratch) for name in dirs + files)[:20]
