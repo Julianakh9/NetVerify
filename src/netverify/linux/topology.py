@@ -9,9 +9,13 @@ Safety properties:
       namespace also destroys the veth end inside it.
     - Only the `ip` setup/cleanup commands are privileged. Commands run in
       a namespace drop back to the calling user after entering it.
+    - One exception, kept as narrow as possible: run_packet_probe() runs
+      NetVerify's own packet probe, with validated arguments only, as the
+      calling user with CAP_NET_RAW and nothing else.
 """
 
 import ipaddress
+import math
 import os
 import secrets
 import shutil
@@ -23,6 +27,11 @@ from itertools import islice
 from types import TracebackType
 
 from netverify.linux.commands import DEFAULT_TIMEOUT, CommandError, run_command
+from netverify.linux.packet_request import (
+    PACKET_PROBE_MODULE,
+    build_arguments,
+    parse_arguments,
+)
 
 # A runner takes an argument list (and an optional timeout keyword) and
 # returns a CompletedProcess or raises CommandError. Tests inject fakes.
@@ -30,6 +39,17 @@ Runner = Callable[..., subprocess.CompletedProcess[str]]
 
 DEFAULT_NETWORK = "10.231.0.0/30"
 NAME_PREFIX = "netverify"
+
+# setpriv options for the packet probe, as verified in the Milestone 7
+# feasibility spike: CAP_NET_RAW is the only capability in the inheritable,
+# ambient and bounding sets, and no-new-privs stops the process (or
+# anything it might start) from gaining more, even through setuid files.
+PACKET_PROBE_CAPABILITIES = (
+    "--inh-caps=-all,+net_raw",
+    "--ambient-caps=-all,+net_raw",
+    "--bounding-set=-all,+net_raw",
+    "--no-new-privs",
+)
 
 
 class TopologyError(Exception):
@@ -252,6 +272,61 @@ class VethTopology:
             text=True,
         )
 
+    # Packet probe: the one command run with a capability
+
+    def run_packet_probe(
+        self, endpoint: Endpoint, arguments: Sequence[str], *, timeout: float
+    ) -> subprocess.CompletedProcess[str]:
+        """Run NetVerify's packet probe in endpoint's namespace with CAP_NET_RAW.
+
+        This is not a general command runner. The command is always this
+        Python interpreter running the netverify.linux.packet_probe module
+        in isolated mode (-I), with arguments that must parse as a packet
+        probe request (see netverify.linux.packet_request) for this
+        endpoint: its own interface and address, and a destination host
+        inside the topology's network. Only the canonical form of the
+        parsed arguments is run.
+
+        The probe runs as the calling (non-root) user, with CAP_NET_RAW as
+        its only capability (PACKET_PROBE_CAPABILITIES). It is never run as
+        root.
+
+        Raises:
+            ValueError: The arguments are invalid, or name an interface,
+                source or destination outside this topology.
+            TypeError: arguments is not a sequence of strings, or timeout
+                is not a number.
+            RuntimeError: The topology is not active, or the caller is root.
+            CommandError: The probe failed to run, exited with an error or
+                timed out.
+        """
+        self._require_own_endpoint(endpoint)
+        request = parse_arguments(arguments)
+        if request.interface != endpoint.interface:
+            raise ValueError(
+                f"interface {request.interface!r} is not {endpoint.interface!r}, "
+                f"the interface of {endpoint.namespace}"
+            )
+        if request.source != endpoint.address:
+            raise ValueError(f"source {request.source} is not {endpoint.address}, "
+                             f"the address of {endpoint.interface}")
+        _require_topology_host(endpoint, request.destination)
+        timeout = _check_process_timeout(timeout)
+
+        uid, gid = os.getuid(), os.getgid()
+        if uid == 0 or not self._drop_privileges:
+            raise RuntimeError(
+                "packet probes run as a non-root user with CAP_NET_RAW only; "
+                "they are never run as root"
+            )
+        command = [
+            *self._privilege, "ip", "netns", "exec", endpoint.namespace,
+            "setpriv", f"--reuid={uid}", f"--regid={gid}", "--clear-groups",
+            *PACKET_PROBE_CAPABILITIES, "--",
+            sys.executable, "-I", "-m", PACKET_PROBE_MODULE, *build_arguments(request),
+        ]
+        return self._run(command, timeout=timeout)
+
     # Link state
 
     def set_link_state(
@@ -349,6 +424,26 @@ class VethTopology:
     def _require_active(self) -> None:
         if self._state != "active":
             raise RuntimeError(f"topology is not active (state: {self._state})")
+
+
+def _require_topology_host(endpoint: Endpoint, destination: str) -> None:
+    """Raise ValueError unless destination is a host address on endpoint's link."""
+    network = ipaddress.IPv4Interface(endpoint.cidr).network
+    address = ipaddress.IPv4Address(destination)
+    special = network.prefixlen < 31 and address in (network.network_address,
+                                                     network.broadcast_address)
+    if address not in network or special:
+        raise ValueError(f"destination {destination} is not a host address in the "
+                         f"topology network {network}")
+
+
+def _check_process_timeout(timeout: float) -> float:
+    """Validate the overall timeout for running a probe process."""
+    if isinstance(timeout, bool) or not isinstance(timeout, (int, float)):
+        raise TypeError(f"timeout must be a number, got {timeout!r}")
+    if not math.isfinite(timeout) or timeout <= 0:
+        raise ValueError(f"timeout must be a positive finite number, got {timeout!r}")
+    return float(timeout)
 
 
 def _default_drop_privileges(privilege: Sequence[str]) -> list[str]:
