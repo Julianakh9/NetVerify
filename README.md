@@ -115,35 +115,31 @@ Requirements:
   Scapy 2.6.1 (GPL-2.0-only; see [Third-party licenses](#third-party-licenses)),
   plus the [packet prerequisites](#packet-check-requirements).
 
-NetVerify is not published on PyPI; it is installed from the GitHub
-repository.
-
-### v0.1.0: the latest published release
+NetVerify is not published on PyPI. Install it from the GitHub repository:
 
 ```bash
 python3 -m venv .venv
-.venv/bin/python -m pip install "git+https://github.com/Julianakh9/NetVerify.git@v0.1.0"
-.venv/bin/netverify --version     # netverify 0.1.0
+# Core only, without Scapy:
+.venv/bin/python -m pip install "git+https://github.com/Julianakh9/NetVerify.git@v0.2.0"
+# Or with the optional packet checks (adds Scapy 2.6.1):
+.venv/bin/python -m pip install "netverify[packet] @ git+https://github.com/Julianakh9/NetVerify.git@v0.2.0"
+.venv/bin/netverify --version     # netverify 0.2.0
 ```
 
-v0.1.0 does not include the packet checks and has no `packet` extra.
-
-### v0.2.0: release candidate (not yet published)
-
-v0.2.0 adds the ICMP and ARP packet checks. It is a release candidate: it
-has not been tagged or published, and it is available only from the
-`feature/m7-scapy-packet-verification` branch. To try it from a clone:
+Or from a local clone:
 
 ```bash
-git clone --branch feature/m7-scapy-packet-verification https://github.com/Julianakh9/NetVerify.git
+git clone https://github.com/Julianakh9/NetVerify.git
 cd NetVerify
 python3 -m venv .venv
-.venv/bin/python -m pip install .              # core only, without Scapy
-.venv/bin/python -m pip install ".[packet]"    # or: with Scapy 2.6.1, for packet checks
-.venv/bin/netverify --version                  # netverify 0.2.0
+.venv/bin/python -m pip install .              # core only
+.venv/bin/python -m pip install ".[packet]"    # or: with packet checks
 ```
 
 Both forms install the `netverify` package and the `netverify` command.
+The previous release, v0.1.0, which has no packet checks, can still be
+installed from its tag (`@v0.1.0`).
+
 The `packet` extra also installs Scapy, pinned to 2.6.1, the only version
 NetVerify has been tested with; Scapy is installed from its own
 distribution and is not part of NetVerify (see
@@ -939,8 +935,7 @@ It uses Python 3.11, the oldest supported version.
   exit codes), on commit `40e9247`, passed all four jobs, including the
   leftover-namespace check
   ([run 43263893574](https://github.com/Julianakh9/NetVerify/actions/runs/43263893574)).
-- The first run with ICMP and ARP packet verification, on commit `8b2b6a3`
-  of the `feature/m7-scapy-packet-verification` branch (started manually),
+- The first run with ICMP and ARP packet verification, on commit `8b2b6a3`,
   passed all four jobs: 637 tests passed in each Python job, and 21
   namespace tests passed (10 TCP and topology tests, 11 packet tests),
   with no failures, errors or skips; the leftover-namespace check passed
@@ -959,12 +954,14 @@ packages" step).
 
 ## Current Status
 
-- **v0.1.0** is the latest published release.
-- **v0.2.0** is a release candidate, not yet published. It adds ICMP and
-  ARP packet verification, which is implemented and verified in CI (see
-  [Continuous Integration](#continuous-integration)). Its publication
-  waits for a final review of the licensing questions described in
-  [Third-party licenses](#third-party-licenses).
+**v0.2.0 is the latest release.** It adds ICMP and ARP packet verification
+to v0.1.0. Every feature listed under [Implemented](#implemented) is
+complete and covered by the test suite, which passes on Python 3.11, 3.12
+and 3.13, with the namespace tests on Linux (see
+[Continuous Integration](#continuous-integration)). The packet checks use
+the optional Scapy dependency; see
+[Third-party licenses](#third-party-licenses) for its license and the
+licensing questions that remain open.
 
 The version numbers mark early releases: the Python API and the JSON report
 format (`schema_version` 1) may still change in later 0.x versions.
