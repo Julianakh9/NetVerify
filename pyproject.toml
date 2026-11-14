@@ -6,14 +6,14 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "netverify"
-version = "0.1.0"
-description = "Network verification and testing: TCP and UDP checks, recovery monitoring, structured reports, and Linux network-namespace fault injection."
+version = "0.2.0"
+description = "Network verification and testing: TCP and UDP checks, recovery monitoring, structured reports, and Linux network-namespace fault injection with ICMP and ARP packet checks."
 readme = "README.md"
 requires-python = ">=3.11"
 license = "MIT"
 license-files = ["LICENSE"]
 authors = [{ name = "Juliana Khoury" }]
-keywords = ["network", "verification", "testing", "tcp", "udp", "network-namespaces", "fault-injection"]
+keywords = ["network", "verification", "testing", "tcp", "udp", "icmp", "arp", "network-namespaces", "fault-injection"]
 classifiers = [
     "Development Status :: 3 - Alpha",
     "Environment :: Console",
