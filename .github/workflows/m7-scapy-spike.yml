@@ -85,6 +85,15 @@ jobs:
           fi
           echo "No leftover NetVerify namespaces."
 
+      - name: Check that no temporary Scapy folders were left behind
+        if: always()
+        run: |
+          leftovers="$(find /tmp -maxdepth 1 -name 'netverify-spike-scapy-*' 2>/dev/null || true)"
+          if [ -n "$leftovers" ]; then
+            echo "Leftover folders:"; echo "$leftovers"; exit 1
+          fi
+          echo "No leftover temporary Scapy folders."
+
       - name: Check that no spike probe is still running
         if: always()
         run: |
