@@ -1,0 +1,92 @@
+# TEMPORARY: Milestone 7 Phase 0 feasibility spike. Exists only on the
+# spike/m7-scapy-feasibility branch and is never merged into main.
+name: M7 Scapy spike (temporary)
+
+on:
+  push:
+    branches: [spike/m7-scapy-feasibility]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  spike:
+    name: Scapy CAP_NET_RAW spike (Python 3.11, non-root probe)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    env:
+      PIP_DISABLE_PIP_VERSION_CHECK: "1"
+      REPORT: spike-report.json
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: "3.11"
+
+      - name: Check tools, kernel and sudo
+        run: |
+          uname -r
+          ip -V
+          setpriv --version
+          setpriv --help | grep -- --ambient-caps
+          sudo -n true
+          id
+
+      # Exact Scapy version, so the spike is reproducible.
+      - name: Install NetVerify and Scapy
+        run: python -m pip install -e . "scapy==2.6.1"
+
+      - name: Show installed packages
+        run: python -m pip freeze
+
+      - name: Collect observations
+        timeout-minutes: 5
+        run: python -I spike/m7/run_spike.py collect "$REPORT"
+
+      - name: Report environment
+        if: always()
+        run: python -I spike/m7/run_spike.py annotate "$REPORT" environment
+
+      - name: Report capabilities
+        if: always()
+        run: python -I spike/m7/run_spike.py annotate "$REPORT" caps
+
+      - name: Report ICMP
+        if: always()
+        run: python -I spike/m7/run_spike.py annotate "$REPORT" icmp
+
+      - name: Report ARP
+        if: always()
+        run: python -I spike/m7/run_spike.py annotate "$REPORT" arp
+
+      - name: Report cleanup
+        if: always()
+        run: python -I spike/m7/run_spike.py annotate "$REPORT" cleanup
+
+      - name: Check expectations
+        run: python -I spike/m7/run_spike.py check "$REPORT"
+
+      - name: Check that no test namespaces were left behind
+        if: always()
+        run: |
+          leftovers="$(ip netns list | grep '^netverify-' || true)"
+          if [ -n "$leftovers" ]; then
+            echo "Leftover NetVerify namespaces:"; echo "$leftovers"; exit 1
+          fi
+          echo "No leftover NetVerify namespaces."
+
+      - name: Check that no spike probe is still running
+        if: always()
+        run: |
+          if pgrep -af packet_probe_spike; then exit 1; fi
+          echo "No spike probe processes left."
