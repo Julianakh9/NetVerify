@@ -223,6 +223,10 @@ def annotate(path, section):
                 "resuid": p.get("resuid"), "groups": p.get("groups"),
                 "status_after_open": p.get("caps_after_open") or p.get("caps_after_import"),
                 "socket_owner_uid": p.get("socket_owner_uid"),
+                "home": p.get("home"), "scapy_import_seconds": p.get("scapy_import_seconds"),
+                "scapy_files_written": p.get("scapy_files_written"),
+                "python_warnings": p.get("python_warnings"), "scapy_log": p.get("scapy_log"),
+                "spawned_subprocesses": p.get("spawned_subprocesses"),
                 "exception": p.get("exception"), "stderr": record.get("stderr", "")[-300:],
                 "error": record.get("error")}))
     elif section in ("icmp", "arp"):
@@ -248,8 +252,15 @@ def check(path):
         return report.get(section, {}).get(name, {}).get("probe", {}).get("outcome", {})
 
     control = report.get("caps", {}).get("none", {}).get("probe", {})
-    expect("control without CAP_NET_RAW is refused (PermissionError)",
-           (control.get("exception") or {}).get("type") == "PermissionError")
+    # Run 1 showed a PermissionError from `import scapy` can pass for this,
+    # so the refusal must come from opening the packet socket.
+    control_error = control.get("exception") or {}
+    expect("control without CAP_NET_RAW is refused when opening the packet socket",
+           control_error.get("type") == "PermissionError"
+           and control_error.get("stage") == "open L2 socket")
+    expect("Scapy imported in every variant",
+           all((r.get("probe", {}).get("exception") or {}).get("stage") != "import scapy"
+               for r in report.get("caps", {}).values()))
     chosen = report.get("chosen_variant")
     expect("a non-root CAP_NET_RAW variant works", chosen)
     for section in ("icmp", "arp"):

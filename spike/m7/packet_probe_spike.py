@@ -20,8 +20,10 @@ import logging
 import os
 import secrets
 import select
+import shutil
 import subprocess
 import sys
+import tempfile
 import time
 import warnings
 
@@ -205,6 +207,20 @@ def main() -> int:
         parser.error(f"--timeout must be in (0, {MAX_TIMEOUT}]")
 
     home = os.environ.get("HOME")
+    # Run 1 finding: under sudo, HOME is /root, and Scapy fails to import
+    # because it cannot create /root/.cache as the calling user. Give Scapy
+    # a private, user-owned cache/config folder instead, removed on exit.
+    scratch = tempfile.mkdtemp(prefix="netverify-spike-scapy-")
+    os.environ["XDG_CACHE_HOME"] = os.path.join(scratch, "cache")
+    os.environ["XDG_CONFIG_HOME"] = os.path.join(scratch, "config")
+    try:
+        return _run(args, home, scratch)
+    finally:
+        shutil.rmtree(scratch, ignore_errors=True)
+
+
+def _run(args: argparse.Namespace, home: str | None, scratch: str) -> int:
+    global STAGE
     out: dict = {
         "command": args.command,
         "resuid": os.getresuid(),
@@ -230,6 +246,9 @@ def main() -> int:
         out["exception"] = {"stage": STAGE, "type": type(exc).__name__,
                             "errno": getattr(exc, "errno", None), "message": str(exc)[:500]}
     out["caps_end"] = status()
+    out["scapy_files_written"] = sorted(
+        os.path.relpath(os.path.join(root, name), scratch)
+        for root, dirs, files in os.walk(scratch) for name in dirs + files)[:20]
     out["scapy_log"] = LOG
     out["spawned_subprocesses"] = SPAWNED[:10]
     out["total_seconds"] = round(time.monotonic() - START, 3)
