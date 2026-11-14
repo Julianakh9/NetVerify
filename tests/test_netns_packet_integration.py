@@ -247,7 +247,31 @@ def test_source_link_down_fails_at_socket_open_and_recovers(topology):
     assert after_arp.success is True, after_arp.failure
 
 
-def test_peer_link_down_times_out_within_the_deadline_and_recovers(topology):
+def assert_peer_down_failure(result):
+    """Check a failure observed while the *peer's* link is down.
+
+    Taking the peer down removes carrier from the source veth, and the
+    kernel applies that change asynchronously. Two outcomes have been
+    observed in CI, depending on whether it has done so when the probe
+    sends its first frame (the ARP request):
+        - not yet: the frame is accepted and lost, so the check ends in a
+          TIMEOUT at its deadline (runs 43577545940 and 43582218935);
+        - already: the source's transmit queue drops the frame and the
+          send fails at once with ENOBUFS, classified as SOCKET_ERROR
+          (run 43584247211).
+    Nothing else is accepted, and each outcome is checked strictly.
+    """
+    if result.reason is FailureReason.TIMEOUT:
+        assert_bounded_timeout(result)
+        return
+    assert result.reason is FailureReason.SOCKET_ERROR, result.failure
+    assert result.failure.error_code == errno.ENOBUFS, result.failure
+    assert result.failure.exception_type == "OSError"
+    assert result.failure.message.startswith("Could not send the ARP request:"), result.failure
+    assert 0 <= result.duration_seconds <= TIMEOUT + OVERRUN, result.duration_seconds
+
+
+def test_peer_link_down_fails_within_the_deadline_and_recovers(topology):
     with LinkDown(topology, topology.right):
         began = time.monotonic()
         icmp = verify_icmp_echo_in_namespace(topology, topology.left, topology.right.address,
@@ -258,10 +282,12 @@ def test_peer_link_down_times_out_within_the_deadline_and_recovers(topology):
 
     # No hidden MAC lookup: the whole ICMP check, ARP included, keeps to
     # one deadline (the spike measured 4.5 s for 2 s with Scapy's lookup).
-    assert_bounded_timeout(icmp)
-    assert "so no echo request was sent" in icmp.failure.message
+    # Either way, the echo request is never sent: ARP fails first.
+    assert_peer_down_failure(icmp)
+    if icmp.reason is FailureReason.TIMEOUT:
+        assert "so no echo request was sent" in icmp.failure.message
     assert icmp_wall < TIMEOUT + PROBE_OVERHEAD
-    assert_bounded_timeout(arp)
+    assert_peer_down_failure(arp)
 
     assert link_is_up(topology, topology.right) is True
     after = verify_icmp_echo_in_namespace(topology, topology.left, topology.right.address,

@@ -578,6 +578,24 @@ def test_network_errors_while_sending_or_receiving_are_classified(stage, message
     assert link.closed
 
 
+@pytest.mark.parametrize("request_", [ARP_REQUEST, ICMP_REQUEST], ids=["arp", "icmp"])
+def test_enobufs_when_sending_is_a_socket_error_not_a_timeout(request_):
+    # Seen on Linux when the peer's link is down and the kernel already
+    # drops the source's frames: the send fails at once with ENOBUFS.
+    # It stays a classified socket error, distinct from TIMEOUT.
+    result, link = run(request_, fail={"send": OSError(errno.ENOBUFS,
+                                                       "No buffer space available")})
+
+    assert result.reason is FailureReason.SOCKET_ERROR
+    assert result.failure.error_code == errno.ENOBUFS
+    assert result.failure.exception_type == "OSError"
+    assert result.failure.message == (
+        f"Could not send the ARP request: [Errno {errno.ENOBUFS}] No buffer space available")
+    assert link.sent == [] and link.waits == []  # nothing sent, no waiting
+    assert result.duration_seconds == pytest.approx(0.0)
+    assert link.closed
+
+
 @pytest.mark.parametrize("error", [
     PermissionError(errno.EPERM, "Operation not permitted"),
     OSError(errno.ENODEV, "No such device"),

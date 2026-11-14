@@ -689,14 +689,17 @@ allowance of 15 seconds before it is treated as hung (`CommandError`).
 |---|---|
 | A correct reply | Success |
 | No reply by the deadline (for example, nobody has the address, or the peer's link is down) | `TIMEOUT` |
+| The peer's link is down and the kernel already drops the source's frames | `SOCKET_ERROR`, from `ENOBUFS` when the ARP request is sent |
 | The source interface is down | `NETWORK_UNREACHABLE`, from `ENETDOWN` when the packet socket is opened |
 | An echo reply from another address, or with a different payload | `UNEXPECTED_SENDER`, `PAYLOAD_MISMATCH` |
 | An ICMP error quoting the request | See [Failure Classification](#failure-classification) |
 | An ARP reply with another MAC address than `expected_mac`, or inconsistent Ethernet and ARP addresses | `HARDWARE_ADDRESS_MISMATCH` |
 
-The `TIMEOUT` and `NETWORK_UNREACHABLE` rows for link faults were observed
-in the Linux namespace tests in CI (see
-[Continuous Integration](#continuous-integration)).
+The link-fault rows were observed in the Linux namespace tests in CI (see
+[Continuous Integration](#continuous-integration)). With the peer's link
+down, which of `TIMEOUT` and `SOCKET_ERROR` (`ENOBUFS`) occurs depends on
+whether the kernel has applied the loss of carrier on the source interface
+when the first frame is sent; both have been observed.
 
 Errors are kept separate as for TCP checks: invalid arguments raise
 `ValueError` or `TypeError` before anything runs; a probe that cannot run

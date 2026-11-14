@@ -59,6 +59,15 @@ def test_debugging_details_are_kept():
     assert failure.exception_type == "ConnectionRefusedError"
 
 
+def test_enobufs_is_a_socket_error():
+    # Not a timeout: the kernel refused the send (for example, a link
+    # without carrier). It must not be guessed as a more specific reason.
+    failure = classify_os_error(OSError(errno.ENOBUFS, "No buffer space available"))
+
+    assert failure.reason is FailureReason.SOCKET_ERROR
+    assert failure.error_code == errno.ENOBUFS
+
+
 def test_error_without_message_uses_exception_name():
     failure = classify_os_error(TimeoutError())
 
