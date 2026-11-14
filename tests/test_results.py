@@ -153,3 +153,111 @@ def test_from_dict_rejects_invalid_data(change, error):
 
     with pytest.raises(error):
         VerificationResult.from_dict(data)
+
+
+# Portless protocols (ICMP, ARP) and protocol-specific port rules
+
+
+def test_protocol_values_are_stable_strings():
+    assert [p.value for p in Protocol] == ["tcp", "udp", "icmp", "arp"]
+    assert [p for p in Protocol if p.uses_ports] == [Protocol.TCP, Protocol.UDP]
+
+
+def test_new_failure_reasons_are_stable_strings():
+    assert FailureReason.HARDWARE_ADDRESS_MISMATCH.value == "hardware_address_mismatch"
+    assert FailureReason.ICMP_ERROR.value == "icmp_error"
+
+
+def test_target_port_defaults_to_none_and_existing_targets_are_unchanged():
+    assert Target("10.0.0.1").port is None
+    assert Target("192.0.2.10", 80) == TARGET
+    assert TARGET.port == 80
+
+
+@pytest.mark.parametrize("protocol", [Protocol.ICMP, Protocol.ARP])
+def test_portless_protocols_accept_a_target_without_port(protocol):
+    result = VerificationResult(protocol, Target("10.231.0.2"), 0.001)
+
+    assert result.success
+    assert result.target.port is None
+
+
+@pytest.mark.parametrize("protocol", [Protocol.ICMP, Protocol.ARP])
+@pytest.mark.parametrize("port", [0, 80, "80"])
+def test_portless_protocols_reject_a_port(protocol, port):
+    with pytest.raises(ValueError, match="have no port"):
+        VerificationResult(protocol, Target("10.231.0.2", port), 0.001)
+
+
+@pytest.mark.parametrize("protocol", [Protocol.TCP, Protocol.UDP])
+def test_port_protocols_require_a_port(protocol):
+    with pytest.raises(ValueError, match="need a port"):
+        VerificationResult(protocol, Target("192.0.2.10"), 0.001)
+
+
+@pytest.mark.parametrize("protocol", [Protocol.TCP, Protocol.UDP])
+@pytest.mark.parametrize("port", [0, 1, 65535, "8080"])
+def test_port_protocols_keep_accepting_ports_as_given(protocol, port):
+    # Unchanged behavior: the checks pass the caller's port through, and
+    # results record it exactly as given.
+    assert VerificationResult(protocol, Target("h", port), 0.0).target.port == port
+
+
+@pytest.mark.parametrize("protocol", [Protocol.ICMP, Protocol.ARP])
+@pytest.mark.parametrize(
+    "failure",
+    [None,
+     Failure(FailureReason.TIMEOUT, "no reply within 2.0 seconds"),
+     Failure(FailureReason.HARDWARE_ADDRESS_MISMATCH, "is at 02:00:00:00:00:01"),
+     Failure(FailureReason.ICMP_ERROR, "ICMP time exceeded (type 11, code 0)")],
+    ids=["success", "timeout", "mac-mismatch", "icmp-error"],
+)
+def test_portless_results_round_trip_through_json(protocol, failure):
+    result = VerificationResult(protocol, Target("10.231.0.2"), 0.0005, failure=failure)
+
+    data = json.loads(json.dumps(result.to_dict()))
+
+    assert data["protocol"] == protocol.value
+    assert data["target"] == {"host": "10.231.0.2", "port": None}
+    assert VerificationResult.from_dict(data) == result
+
+
+def test_tcp_serialization_is_unchanged():
+    data = VerificationResult(Protocol.TCP, TARGET, 0.25, failure=REFUSED).to_dict()
+
+    assert data == {
+        "protocol": "tcp",
+        "target": {"host": "192.0.2.10", "port": 80},
+        "success": False,
+        "duration_seconds": 0.25,
+        "failure": {
+            "reason": "connection_refused",
+            "message": "[Errno 61] Connection refused",
+            "error_code": 61,
+            "exception_type": "ConnectionRefusedError",
+        },
+    }
+
+
+@pytest.mark.parametrize(
+    ("protocol", "port", "error"),
+    [("tcp", None, ValueError),   # TCP data with a null port
+     ("udp", None, ValueError),
+     ("icmp", 80, ValueError),    # ICMP data with a port
+     ("arp", 0, ValueError),
+     ("sctp", 80, ValueError)],   # unknown protocol
+)
+def test_from_dict_enforces_port_rules(protocol, port, error):
+    data = {"protocol": protocol, "target": {"host": "h", "port": port},
+            "duration_seconds": 0.0, "failure": None}
+
+    with pytest.raises(error):
+        VerificationResult.from_dict(data)
+
+
+def test_from_dict_still_requires_the_port_key_for_portless_protocols():
+    data = {"protocol": "icmp", "target": {"host": "10.231.0.2"},
+            "duration_seconds": 0.0, "failure": None}
+
+    with pytest.raises(KeyError):
+        VerificationResult.from_dict(data)

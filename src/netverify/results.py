@@ -16,6 +16,13 @@ class Protocol(StrEnum):
 
     TCP = "tcp"
     UDP = "udp"
+    ICMP = "icmp"
+    ARP = "arp"
+
+    @property
+    def uses_ports(self) -> bool:
+        """True for protocols whose targets have a port (TCP and UDP)."""
+        return self in (Protocol.TCP, Protocol.UDP)
 
 
 class FailureReason(StrEnum):
@@ -29,14 +36,24 @@ class FailureReason(StrEnum):
     PAYLOAD_MISMATCH = "payload_mismatch"
     UNEXPECTED_SENDER = "unexpected_sender"
     SOCKET_ERROR = "socket_error"
+    # An ARP reply came from the target address with an unexpected MAC
+    # address, or its Ethernet and ARP sender addresses disagree.
+    HARDWARE_ADDRESS_MISMATCH = "hardware_address_mismatch"
+    # An ICMP error quoting the request that has no more specific reason
+    # (see netverify.diagnostics.classify_icmp_error).
+    ICMP_ERROR = "icmp_error"
 
 
 @dataclass(frozen=True, slots=True)
 class Target:
-    """The host and port a check was run against, exactly as given."""
+    """The host and port a check was run against, exactly as given.
+
+    port is None for protocols without ports (ICMP and ARP). Whether a port
+    is required depends on the protocol, so VerificationResult checks it.
+    """
 
     host: str
-    port: int
+    port: int | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -74,6 +91,8 @@ class VerificationResult:
 
     Invariants (checked on creation):
         - protocol is a Protocol and target is a Target.
+        - TCP and UDP targets have a port; ICMP and ARP targets have none
+          (target.port is None).
         - duration_seconds is a finite, non-negative number.
         - failure is a Failure or None.
     """
@@ -88,6 +107,14 @@ class VerificationResult:
             raise TypeError(f"protocol must be a Protocol, got {self.protocol!r}")
         if not isinstance(self.target, Target):
             raise TypeError(f"target must be a Target, got {self.target!r}")
+        # Only presence is checked for TCP and UDP ports, as before this
+        # rule existed: the checks pass the caller's port through unchanged.
+        if self.protocol.uses_ports and self.target.port is None:
+            raise ValueError(f"{self.protocol.value} targets need a port")
+        if not self.protocol.uses_ports and self.target.port is not None:
+            raise ValueError(
+                f"{self.protocol.value} targets have no port, got {self.target.port!r}"
+            )
         duration = self.duration_seconds
         if isinstance(duration, bool) or not isinstance(duration, (int, float)):
             raise TypeError(f"duration_seconds must be a number, got {duration!r}")
@@ -109,7 +136,11 @@ class VerificationResult:
         return None if self.failure is None else self.failure.reason
 
     def to_dict(self) -> dict[str, Any]:
-        """Return a JSON-serializable dictionary of this result."""
+        """Return a JSON-serializable dictionary of this result.
+
+        The target always has "host" and "port"; "port" is null for ICMP
+        and ARP results.
+        """
         failure = None
         if self.failure is not None:
             failure = {
@@ -131,8 +162,10 @@ class VerificationResult:
         """Rebuild a result from the output of to_dict().
 
         Raises:
-            KeyError: A required field is missing.
-            ValueError: A value is invalid, or "success" contradicts "failure".
+            KeyError: A required field is missing. "port" is required for
+                every protocol; it is null for ICMP and ARP.
+            ValueError: A value is invalid, the port does not suit the
+                protocol, or "success" contradicts "failure".
             TypeError: A field has the wrong type.
         """
         failure = None

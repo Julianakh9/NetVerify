@@ -20,7 +20,7 @@ from enum import IntEnum
 from typing import Any
 
 from netverify.recovery import RecoveryResult
-from netverify.results import FailureReason, VerificationResult
+from netverify.results import FailureReason, Protocol, VerificationResult
 
 SCHEMA_VERSION = 1
 
@@ -99,19 +99,34 @@ def format_text(command: str, outcome: Outcome) -> str:
     return _format_verification(command, outcome)
 
 
+def _target(result: VerificationResult) -> str:
+    """host:port, or just the host for portless (ICMP and ARP) targets."""
+    target = result.target
+    return target.host if target.port is None else f"{target.host}:{target.port}"
+
+
+# What a successful check observed, by protocol. TCP and UDP wording is
+# part of the CLI's established output.
+_SUCCESS_TEXT = {
+    Protocol.TCP: "connected",
+    Protocol.UDP: "echo matched",
+    Protocol.ICMP: "echo reply received",
+    Protocol.ARP: "ARP reply received",
+}
+
+
 def _format_verification(command: str, result: VerificationResult) -> str:
-    target = f"{command} {result.target.host}:{result.target.port}"
+    target = f"{command} {_target(result)}"
     duration = _seconds(result.duration_seconds)
     if result.success:
-        verb = "connected" if command == "tcp" else "echo matched"
-        return f"PASS  {target}  {verb} in {duration}"
+        return f"PASS  {target}  {_SUCCESS_TEXT[result.protocol]} in {duration}"
     assert result.failure is not None
     return f"FAIL  {target}  {result.failure.reason}: {result.failure.message} ({duration})"
 
 
 def _format_recovery(recovery: RecoveryResult) -> str:
     last = recovery.last_result
-    target = f"recover tcp {last.target.host}:{last.target.port}"
+    target = f"recover {last.protocol} {_target(last)}"
     attempts = f"{recovery.attempts} attempt{'s' if recovery.attempts != 1 else ''}"
     timing = f"{_seconds(recovery.elapsed_seconds)} (deadline {_seconds(recovery.deadline_seconds)})"
     lines = []
